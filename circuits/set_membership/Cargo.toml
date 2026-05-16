@@ -1,0 +1,17 @@
+[package]
+name = "trusset-circuit-set-membership"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Set membership predicate circuit: prove a value lies in a Rescue-committed allowlist without disclosing the value."
+
+[dependencies]
+trusset-circuits-common = { path = "../common" }
+sha2 = "0.10"
+zeroize = { version = "1.8", features = ["derive"] }
+
+[lints]
+workspace = true

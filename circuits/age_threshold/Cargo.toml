@@ -1,0 +1,17 @@
+[package]
+name = "trusset-circuit-age-threshold"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Age threshold predicate circuit: prove (current_epoch_days - dob_days) >= min_age_days without disclosing dob_days."
+
+[dependencies]
+trusset-circuits-common = { path = "../common" }
+sha2 = "0.10"
+zeroize = { version = "1.8", features = ["derive"] }
+
+[lints]
+workspace = true

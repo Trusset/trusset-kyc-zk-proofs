@@ -1,0 +1,14 @@
+[build]
+# Default target is the host. WASM builds are invoked explicitly via
+# `cargo build --target wasm32-unknown-unknown -p verifier`.
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+    "-C", "target-feature=+bulk-memory,+mutable-globals",
+]
+
+[net]
+# v2 prover is offline-only; CI runs with no network. Allow Cargo registry
+# during initial `cargo fetch`, but the prover binary itself makes zero
+# network syscalls at runtime (see prover/Cargo.toml getrandom custom hook).
+offline = false

@@ -1,0 +1,88 @@
+{
+  "_comment": "Cross-language KAT bridge for params_hash. Each entry is a (circuit, params) pair and the expected SHA-256 over their canonical encoding. Both the Rust prover and the TS CLI compute params_hash from the same canonical bytes and must agree to the byte. Regenerate with: cargo test -p trusset-prover --test params_hash_kat -- --ignored kat_refresh",
+  "_note": "The `expected` values above are placeholders. Run the Rust KAT test in refresh mode to populate them with the real hashes:\n  TRUSSET_KAT_REFRESH=1 cargo test -p trusset-prover --test params_hash_kat\nThen commit the updated file. Subsequent test runs will assert against these pinned values.",
+  "expected": {
+    "age_threshold_18years": "0x9ffc234565695be53e736fda2efe71922997613433dccede49b58f1f2931d24c",
+    "age_threshold_21years": "0x327fdcd9be2c9140c1b0a9a99e9d157656b2d44d09a5f1ec624b508b02ae47de",
+    "preimage_knowledge_default": "0xb193f1053e91e8b367d8cc002673d6fc1279b1fcffcbfc603bf0ad68e9e7921a",
+    "preimage_knowledge_max32": "0xa667425a6253e311d7b017809c3e4140daf4414c058cd60c9af4612cd1f05c9c",
+    "preimage_knowledge_max64": "0xc0f744ce67c8b76ba172d99e6f3a870a528339e00a81adb9c7674c71afeef633",
+    "set_membership_country_allowlist": "0x18df693b0584ab677ecba4efcb41fdf3969257b9c451a0d7404ab05303273d6e",
+    "set_membership_document_types": "0x0fa61014e26eed8f579510c79f5164a7883469b7e0aad7095094042d5963bf18",
+    "tier_threshold_eligible": "0x21fee3ead6d5f59e3db71465c0c659ba5259c2630db3a2c6b6d9b6af363e8edd",
+    "tier_threshold_professional": "0x220c654c0a1b31f320c43f61cabc3ec404b817838d95bde1ad9c7041a8a12abd",
+    "tier_threshold_retail": "0x87f7fabd62d2f6bba9b5cf54549a1eaea603b3734db746edebd89e6076b12485"
+  },
+  "vectors": [
+    {
+      "circuit": "preimage_knowledge",
+      "name": "preimage_knowledge_default",
+      "params": {
+        "maxValueBytes": 128
+      }
+    },
+    {
+      "circuit": "preimage_knowledge",
+      "name": "preimage_knowledge_max32",
+      "params": {
+        "maxValueBytes": 32
+      }
+    },
+    {
+      "circuit": "preimage_knowledge",
+      "name": "preimage_knowledge_max64",
+      "params": {
+        "maxValueBytes": 64
+      }
+    },
+    {
+      "circuit": "tier_threshold",
+      "name": "tier_threshold_retail",
+      "params": {
+        "minTier": 1
+      }
+    },
+    {
+      "circuit": "tier_threshold",
+      "name": "tier_threshold_professional",
+      "params": {
+        "minTier": 2
+      }
+    },
+    {
+      "circuit": "tier_threshold",
+      "name": "tier_threshold_eligible",
+      "params": {
+        "minTier": 3
+      }
+    },
+    {
+      "circuit": "age_threshold",
+      "name": "age_threshold_18years",
+      "params": {
+        "minAgeDays": 6570
+      }
+    },
+    {
+      "circuit": "age_threshold",
+      "name": "age_threshold_21years",
+      "params": {
+        "minAgeDays": 7665
+      }
+    },
+    {
+      "circuit": "set_membership",
+      "name": "set_membership_country_allowlist",
+      "params": {
+        "list": "country_allowlist"
+      }
+    },
+    {
+      "circuit": "set_membership",
+      "name": "set_membership_document_types",
+      "params": {
+        "list": "document_types"
+      }
+    }
+  ]
+}

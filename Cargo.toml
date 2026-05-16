@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "circuits/common",
+    "circuits/age_threshold",
+    "circuits/set_membership",
+    "circuits/tier_threshold",
+    "circuits/preimage_knowledge",
+    "bundle-format",
+    "prover",
+    "verifier",
+    "tools/list-commit",
+]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+authors = ["Trusset"]
+repository = "https://github.com/Trusset/trusset-kyc-hashing"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.release-wasm]
+inherits = "release"
+panic = "abort"
+lto = "fat"

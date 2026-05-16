@@ -1,0 +1,46 @@
+[package]
+name = "trusset-prover"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Offline KYC prover binary: reads a job spec on stdin, emits per-subject zk-STARK bundles to /output."
+
+[lib]
+name = "trusset_prover"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trusset-prover"
+path = "src/main.rs"
+
+[dependencies]
+trusset-circuits-common = { path = "../circuits/common" }
+trusset-circuit-age-threshold = { path = "../circuits/age_threshold" }
+trusset-circuit-set-membership = { path = "../circuits/set_membership" }
+trusset-circuit-tier-threshold = { path = "../circuits/tier_threshold" }
+trusset-circuit-preimage-knowledge = { path = "../circuits/preimage_knowledge" }
+trusset-bundle-format = { path = "../bundle-format" }
+
+# JSON over stdin/stdout
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Signing & encryption (pure-Rust, audit-friendly)
+ed25519-dalek = "2"
+xsalsa20poly1305 = "0.9"
+hkdf = "0.12"
+sha2 = "0.10"
+
+# Utility
+hex = "0.4"
+zeroize = { version = "1.8", features = ["derive"] }
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

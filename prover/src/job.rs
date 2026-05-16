@@ -1,0 +1,290 @@
+//! Job spec: the JSON read from stdin (plan §"TS ↔ Rust Integration").
+
+use crate::errors::{ErrorCode, ProverError, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Job {
+    pub version: String,
+    #[serde(default = "default_deterministic")]
+    pub deterministic: bool,
+    pub epoch_days: u64,
+    pub output_root: String,
+    /// 0x-prefixed 64-char hex of SHA-256 over canonical config. Folded into
+    /// the per-subject seed derivation so two different configs never produce
+    /// the same bundle bytes.
+    pub config_hash: String,
+    /// When true, emit zero-byte proof files and skip per-circuit `prove()`.
+    /// Manifest mode stays `"stub"`; the verifier rejects these in strict
+    /// mode (plan §"Resolved edge cases" item 3).
+    ///
+    /// Use case: CI smoke runs or iteration speed during Phase 2B AIR work.
+    /// In Phase 2A this flag is largely cosmetic — the prover already emits
+    /// stub proofs — but it lets us shave the per-leaf hash cost.
+    #[serde(default)]
+    pub skip_proofs: bool,
+    pub subjects: Vec<JobSubject>,
+    #[serde(default)]
+    pub list_commitments: BTreeMap<String, ListCommitment>,
+}
+
+fn default_deterministic() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobSubject {
+    /// EIP-55 wallet address (0x-prefixed, 42 chars).
+    pub subject_id: String,
+    /// Verbatim passthrough block written into `manifest.passthrough`.
+    #[serde(default)]
+    pub passthrough: serde_json::Value,
+    pub leaves: Vec<JobLeaf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobLeaf {
+    pub field: String,
+    pub circuit: String,
+    /// Witness value. JSON-typed so the prover can accept string, number, or
+    /// date forms depending on the circuit (see `dispatch::prove_leaf`).
+    pub value: serde_json::Value,
+    /// Circuit-specific parameters relevant to public inputs
+    /// (e.g. `min_age_days`, `min_tier`, `list_id`). Schema enforced per
+    /// circuit at dispatch time.
+    #[serde(default)]
+    pub public: serde_json::Value,
+    /// 0x-prefixed 64-char hex of SHA-256 over canonical params.
+    pub params_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListCommitment {
+    /// Raw allowlist values, NFC-normalized strings. The prover recomputes
+    /// the Rescue Merkle root from these.
+    pub values: Vec<String>,
+    /// SHA-256 of the source file (for `manifest.lists`).
+    #[serde(default)]
+    pub source_sha256: String,
+}
+
+impl Job {
+    pub fn parse_from_slice(bytes: &[u8]) -> Result<Self> {
+        let job: Job = serde_json::from_slice(bytes)?;
+        job.validate()?;
+        Ok(job)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != "2.0.0" {
+            return Err(ProverError::input(format!(
+                "unsupported job version: {} (expected 2.0.0)",
+                self.version
+            )));
+        }
+        if self.subjects.is_empty() {
+            return Err(ProverError::input("job has no subjects"));
+        }
+        validate_hex32("config_hash", &self.config_hash)?;
+        for (i, s) in self.subjects.iter().enumerate() {
+            s.validate().map_err(|e| {
+                ProverError::input(format!("subject[{}] ({}): {}", i, s.subject_id, e.message))
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl JobSubject {
+    pub fn validate(&self) -> Result<()> {
+        if !is_eip55_like(&self.subject_id) {
+            return Err(ProverError::input(format!(
+                "subject_id is not a 0x-prefixed 40-hex address: {}",
+                self.subject_id
+            )));
+        }
+        if self.leaves.is_empty() {
+            return Err(ProverError::input("subject has no leaves"));
+        }
+        for (i, l) in self.leaves.iter().enumerate() {
+            l.validate().map_err(|e| {
+                ProverError::input(format!("leaf[{}] ({}): {}", i, l.field, e.message))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// 20-byte raw form of the wallet address, used in leaf hash bindings.
+    pub fn wallet_bytes(&self) -> Result<[u8; 20]> {
+        let hex_part = self.subject_id.trim_start_matches("0x");
+        let decoded = hex::decode(hex_part.to_ascii_lowercase()).map_err(|_| {
+            ProverError::input(format!("subject_id is not hex: {}", self.subject_id))
+        })?;
+        if decoded.len() != 20 {
+            return Err(ProverError::input(format!(
+                "subject_id must decode to 20 bytes, got {}",
+                decoded.len()
+            )));
+        }
+        let mut out = [0u8; 20];
+        out.copy_from_slice(&decoded);
+        Ok(out)
+    }
+}
+
+impl JobLeaf {
+    pub fn validate(&self) -> Result<()> {
+        if self.field.is_empty() {
+            return Err(ProverError::input("field name empty"));
+        }
+        // params_hash is validated for shape here; circuit-specific checks
+        // happen in dispatch.
+        validate_hex32("params_hash", &self.params_hash)?;
+        Ok(())
+    }
+
+    pub fn params_hash_bytes(&self) -> Result<[u8; 32]> {
+        let h = self.params_hash.trim_start_matches("0x");
+        let v = hex::decode(h).map_err(|_| {
+            ProverError::input(format!("params_hash not hex: {}", self.params_hash))
+        })?;
+        if v.len() != 32 {
+            return Err(ProverError::input("params_hash must be 32 bytes"));
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&v);
+        Ok(out)
+    }
+}
+
+fn is_eip55_like(s: &str) -> bool {
+    s.len() == 42
+        && s.starts_with("0x")
+        && s[2..]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit())
+}
+
+fn validate_hex32(field: &str, hex: &str) -> Result<()> {
+    let h = hex.trim_start_matches("0x");
+    if h.len() != 64 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ProverError::new(
+            ErrorCode::Input,
+            format!("{} must be 0x-prefixed 64-char hex", field),
+        ));
+    }
+    Ok(())
+}
+
+pub fn parse_config_hash(hex: &str) -> Result<[u8; 32]> {
+    let h = hex.trim_start_matches("0x");
+    let v = hex::decode(h).map_err(|_| ProverError::input("config_hash not hex"))?;
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&v);
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_job_json() -> &'static str {
+        r#"{
+            "version": "2.0.0",
+            "epoch_days": 20587,
+            "output_root": "/tmp/out",
+            "config_hash": "0xababababababababababababababababababababababababababababababab",
+            "subjects": [
+                {
+                    "subject_id": "0x0000000000000000000000000000000000000001",
+                    "leaves": [
+                        {
+                            "field": "firstName",
+                            "circuit": "preimage_knowledge",
+                            "value": "Alice",
+                            "params_hash": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+                        }
+                    ]
+                }
+            ]
+        }"#
+    }
+
+    fn pad_hex(short: &str, len: usize) -> String {
+        let h = short.trim_start_matches("0x");
+        let padded = format!("{:0>1$}", h, len);
+        format!("0x{}", padded)
+    }
+
+    #[test]
+    fn parses_minimal_job() {
+        // The literal in `minimal_job_json` happens to be 62 hex chars
+        // (handy for readability). Replace with a properly-padded version.
+        let json = minimal_job_json().replace(
+            "0xababababababababababababababababababababababababababababababab",
+            &pad_hex("ab", 64),
+        );
+        let job = Job::parse_from_slice(json.as_bytes()).unwrap();
+        assert_eq!(job.version, "2.0.0");
+        assert_eq!(job.subjects.len(), 1);
+        assert!(job.deterministic, "deterministic defaults to true");
+    }
+
+    #[test]
+    fn rejects_unsupported_version() {
+        let bad = r#"{
+            "version": "1.0.0",
+            "epoch_days": 0,
+            "output_root": "/tmp",
+            "config_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "subjects": [{"subject_id": "0x0000000000000000000000000000000000000001",
+                          "leaves": [{"field": "f", "circuit": "preimage_knowledge", "value": "x",
+                                      "params_hash": "0x0000000000000000000000000000000000000000000000000000000000000000"}]}]
+        }"#;
+        let err = Job::parse_from_slice(bad.as_bytes()).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Input);
+    }
+
+    #[test]
+    fn rejects_empty_subjects() {
+        let bad = r#"{
+            "version": "2.0.0",
+            "epoch_days": 0,
+            "output_root": "/tmp",
+            "config_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "subjects": []
+        }"#;
+        let err = Job::parse_from_slice(bad.as_bytes()).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Input);
+        assert!(err.message.contains("no subjects"));
+    }
+
+    #[test]
+    fn rejects_malformed_wallet() {
+        let bad = r#"{
+            "version": "2.0.0",
+            "epoch_days": 0,
+            "output_root": "/tmp",
+            "config_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "subjects": [{"subject_id": "not-an-address",
+                          "leaves": [{"field": "f", "circuit": "preimage_knowledge", "value": "x",
+                                      "params_hash": "0x0000000000000000000000000000000000000000000000000000000000000000"}]}]
+        }"#;
+        let err = Job::parse_from_slice(bad.as_bytes()).unwrap_err();
+        assert!(err.message.contains("not a 0x-prefixed 40-hex address"));
+    }
+
+    #[test]
+    fn wallet_bytes_decodes_to_20() {
+        let s = JobSubject {
+            subject_id: "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01".to_string(),
+            passthrough: serde_json::Value::Null,
+            leaves: vec![],
+        };
+        let bytes = s.wallet_bytes().unwrap();
+        assert_eq!(bytes.len(), 20);
+        assert_eq!(bytes[0], 0xab);
+        assert_eq!(bytes[19], 0x01);
+    }
+}

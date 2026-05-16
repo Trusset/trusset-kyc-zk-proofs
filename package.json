@@ -1,0 +1,22 @@
+{
+  "name": "trusset-kyc-hashing",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Per-leaf zk-STARK KYC hashing tool for Trusset tokenization infrastructure",
+  "main": "cli/dist/index.js",
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "start": "bash scripts/build.sh && node cli/dist/index.js hash",
+    "hash": "bash scripts/build.sh && node cli/dist/index.js hash",
+    "decrypt": "bash scripts/build.sh && node cli/dist/index.js decrypt",
+    "verify": "bash scripts/build.sh && node cli/dist/index.js verify",
+    "show": "bash scripts/build.sh && node cli/dist/index.js show",
+    "postinstall": "bash scripts/build.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["kyc", "hashing", "tokenization", "blockchain", "zk-stark", "winterfell"],
+  "author": "Trusset",
+  "license": "MIT"
+}

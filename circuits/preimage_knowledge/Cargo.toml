@@ -1,0 +1,17 @@
+[package]
+name = "trusset-circuit-preimage-knowledge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Preimage knowledge predicate circuit: prove knowledge of (value, nonce) such that Rescue(value || nonce) == commitment."
+
+[dependencies]
+trusset-circuits-common = { path = "../common" }
+sha2 = "0.10"
+zeroize = { version = "1.8", features = ["derive"] }
+
+[lints]
+workspace = true

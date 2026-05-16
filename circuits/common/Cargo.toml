@@ -1,0 +1,33 @@
+[package]
+name = "trusset-circuits-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Shared cryptographic primitives for Trusset KYC circuits: Rescue-Prime gadgets, Goldilocks helpers, domain tags, canonical serialization."
+
+[dependencies]
+# Winterfell math/crypto — pin major.minor in lockstep across the workspace.
+winter-math = "0.13"
+winter-crypto = "0.13"
+
+# Determinism: HKDF-SHA256 for per-subject / per-leaf seed derivation.
+hkdf = "0.12"
+sha2 = "0.10"
+
+# Unicode NFC normalization for string field values (plan edge case 7).
+unicode-normalization = "0.1"
+
+# Secret-buffer zeroization.
+zeroize = { version = "1.8", features = ["derive"] }
+
+# Compile-time assertions for domain-tag distinctness.
+static_assertions = "1.1"
+
+[dev-dependencies]
+hex-literal = "0.4"
+
+[lints]
+workspace = true

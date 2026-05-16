@@ -1,0 +1,32 @@
+[package]
+name = "trusset-list-commit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "One-shot tool: ingests a plain text list (e.g. ISO-3166 alpha-3) and emits a list_commitments JSON file with the Rescue Merkle root and SHA-256 of the source."
+
+[lib]
+name = "trusset_list_commit"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trusset-list-commit"
+path = "src/main.rs"
+
+[dependencies]
+trusset-circuits-common = { path = "../../circuits/common" }
+trusset-circuit-set-membership = { path = "../../circuits/set_membership" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

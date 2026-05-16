@@ -1,0 +1,22 @@
+# Trusset KYC v2 — country allowlist
+# ISO 3166-1 alpha-3 codes.
+# Edit this file and re-run `trusset-list-commit` to regenerate the JSON.
+# Pinned SHA-256 in config.json must match the rebuilt source SHA-256.
+
+DEU
+FRA
+USA
+GBR
+JPN
+ESP
+ITA
+NLD
+CHE
+SGP
+HKG
+CAN
+AUS
+SWE
+NOR
+DNK
+FIN

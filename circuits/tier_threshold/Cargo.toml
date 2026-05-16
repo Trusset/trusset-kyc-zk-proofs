@@ -1,0 +1,17 @@
+[package]
+name = "trusset-circuit-tier-threshold"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Tier threshold predicate circuit: prove tier >= min_tier where tier in {RETAIL=1, PROFESSIONAL=2, ELIGIBLE_COUNTERPARTY=3}."
+
+[dependencies]
+trusset-circuits-common = { path = "../common" }
+sha2 = "0.10"
+zeroize = { version = "1.8", features = ["derive"] }
+
+[lints]
+workspace = true

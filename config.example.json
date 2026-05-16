@@ -1,0 +1,61 @@
+{
+  "mapping": {
+    "fields": [
+      "firstName",
+      "lastName",
+      "dateOfBirth",
+      "nationality",
+      "documentType",
+      "documentNumber",
+      "documentIssuingCountry"
+    ],
+    "walletAddressField": "walletAddress",
+    "countryField": "country",
+    "investorTypeField": "investorType",
+    "softExpiryDaysField": "softExpiryDays",
+    "hardExpiryDaysField": "hardExpiryDays"
+  },
+  "predicates": {
+    "dateOfBirth":            { "circuit": "age_threshold",       "params": { "minAgeYears": 18 } },
+    "country":                { "circuit": "set_membership",      "params": { "list": "country_allowlist" } },
+    "nationality":            { "circuit": "set_membership",      "params": { "list": "country_allowlist" } },
+    "documentIssuingCountry": { "circuit": "set_membership",      "params": { "list": "country_allowlist" } },
+    "investorType":           { "circuit": "tier_threshold",      "params": { "minTier": "RETAIL" } },
+    "firstName":              { "circuit": "preimage_knowledge",  "params": { "maxValueBytes": 128 } },
+    "lastName":               { "circuit": "preimage_knowledge",  "params": { "maxValueBytes": 128 } },
+    "documentType":           { "circuit": "preimage_knowledge",  "params": { "maxValueBytes": 64  } },
+    "documentNumber":         { "circuit": "preimage_knowledge",  "params": { "maxValueBytes": 64  } }
+  },
+  "tiers": {
+    "NONE": 0,
+    "RETAIL": 1,
+    "PROFESSIONAL": 2,
+    "ELIGIBLE_COUNTERPARTY": 3
+  },
+  "lists": {
+    "country_allowlist": {
+      "path": "config/list_commitments/country_allowlist.json"
+    }
+  },
+  "output": {
+    "format": "csv",
+    "includeIndex": true,
+    "bundleDir": "output",
+    "emitIndexCsv": true,
+    "defaults": {
+      "investorType": "RETAIL",
+      "softExpiryDays": 365,
+      "hardExpiryDays": 730
+    }
+  },
+  "security": {
+    "clearInputAfterProcessing": true,
+    "hashAlgorithm": "rescue_prime",
+    "masterKeyEnv": "TRUSSET_KYC_MASTER_KEY",
+    "epochDaysSource": "utc_today",
+    "deterministic": true
+  },
+  "manifest": {
+    "signingKeyEnv": "TRUSSET_KYC_SIGNING_KEY"
+  }
+}

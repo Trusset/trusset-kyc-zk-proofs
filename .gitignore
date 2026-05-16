@@ -1,0 +1,19 @@
+node_modules/
+dist/
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+*.log
+.DS_Store
+config.json
+
+# Rust workspace build artifacts
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Generated WASM verifier (Phase 5+)
+cli/wasm/*.wasm
+cli/wasm/*.js
+!cli/wasm/.gitkeep

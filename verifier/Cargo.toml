@@ -1,0 +1,45 @@
+[package]
+name = "trusset-verifier"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "STARK bundle verifier: per-leaf proof, Merkle root, and ed25519 manifest signature checks. Compiles to native and wasm32."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "trusset-verifier-cli"
+path = "src/bin/cli.rs"
+
+[features]
+default = []
+# Enable wasm-bindgen entry points. Off by default; turn on for `wasm-pack
+# build` or `cargo build --target wasm32-unknown-unknown --features wasm`.
+wasm = ["dep:wasm-bindgen"]
+
+[dependencies]
+trusset-circuits-common = { path = "../circuits/common" }
+trusset-circuit-age-threshold = { path = "../circuits/age_threshold" }
+trusset-circuit-set-membership = { path = "../circuits/set_membership" }
+trusset-circuit-tier-threshold = { path = "../circuits/tier_threshold" }
+trusset-circuit-preimage-knowledge = { path = "../circuits/preimage_knowledge" }
+trusset-bundle-format = { path = "../bundle-format" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+# Optional WASM entry points (gated by the `wasm` feature).
+wasm-bindgen = { version = "0.2", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+trusset-prover = { path = "../prover" }
+hex = "0.4"
+
+[lints]
+workspace = true
