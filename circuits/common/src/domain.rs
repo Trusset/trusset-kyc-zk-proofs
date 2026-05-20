@@ -12,7 +12,10 @@ pub const DOMAIN_TAG_BYTES: usize = 32;
 const fn pad32(label: &str) -> [u8; DOMAIN_TAG_BYTES] {
     let src = label.as_bytes();
     // Reject overly long labels at compile time.
-    assert!(src.len() <= DOMAIN_TAG_BYTES, "domain tag label exceeds 32 bytes");
+    assert!(
+        src.len() <= DOMAIN_TAG_BYTES,
+        "domain tag label exceeds 32 bytes"
+    );
     let mut out = [b'-'; DOMAIN_TAG_BYTES];
     let mut i = 0;
     while i < src.len() {

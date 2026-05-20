@@ -109,12 +109,8 @@ pub fn prove_leaf(
 }
 
 fn parse_circuit_id(name: &str) -> Result<CircuitId> {
-    CircuitId::from_str(name).ok_or_else(|| {
-        ProverError::new(
-            ErrorCode::Config,
-            format!("unknown circuit: {}", name),
-        )
-    })
+    CircuitId::from_str(name)
+        .ok_or_else(|| ProverError::new(ErrorCode::Config, format!("unknown circuit: {}", name)))
 }
 
 fn leaf_value_as_string(v: &serde_json::Value) -> Result<String> {
@@ -203,7 +199,9 @@ fn prove_tier(
         tier::ValidateError::BelowMinimum { .. } => {
             ProverError::new(ErrorCode::TierBelowMin, format!("{:?}", e))
         }
-        tier::ValidateError::TierIsNone => ProverError::new(ErrorCode::TierNone, format!("{:?}", e)),
+        tier::ValidateError::TierIsNone => {
+            ProverError::new(ErrorCode::TierNone, format!("{:?}", e))
+        }
         other => ProverError::new(ErrorCode::CircuitInternal, format!("{:?}", other)),
     })?;
 

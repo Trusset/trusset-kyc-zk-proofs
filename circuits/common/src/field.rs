@@ -49,8 +49,16 @@ pub fn field_to_bytes(felts: &[Felt]) -> Vec<u8> {
 /// Without NFC, `"café"` with composed vs. decomposed `é` would produce
 /// different proofs and verification would silently fail across locales.
 pub fn string_to_field_canonical(s: &str) -> Vec<Felt> {
-    let nfc: String = s.nfc().collect();
-    bytes_to_field(nfc.as_bytes())
+    bytes_to_field(&nfc_canonicalize(s).into_bytes())
+}
+
+/// Return the NFC-normalized UTF-8 representation of a string. Exposed so
+/// callers that need to manipulate the canonical bytes BEFORE chunking
+/// (e.g. to append a distinguishing suffix in `set_leaf_digest` and
+/// `witness_to_felts` to avoid trailing-zero collisions within a 7-byte
+/// chunk) don't need to depend on `unicode-normalization` directly.
+pub fn nfc_canonicalize(s: &str) -> String {
+    s.nfc().collect()
 }
 
 #[cfg(test)]

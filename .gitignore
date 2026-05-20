@@ -17,3 +17,6 @@ Cargo.lock.bak
 cli/wasm/*.wasm
 cli/wasm/*.js
 !cli/wasm/.gitkeep
+
+.claude
+.vscode

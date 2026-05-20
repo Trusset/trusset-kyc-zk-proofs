@@ -43,9 +43,7 @@ fn compute_for_vector(vector: &Value) -> String {
         .get("circuit")
         .and_then(Value::as_str)
         .expect("vector missing circuit");
-    let params = vector
-        .get("params")
-        .expect("vector missing params");
+    let params = vector.get("params").expect("vector missing params");
 
     let hash = match circuit {
         "preimage_knowledge" => {
@@ -89,8 +87,8 @@ fn compute_for_vector(vector: &Value) -> String {
 
 #[test]
 fn params_hash_kat_matches_pinned_values() {
-    let kat_text = std::fs::read_to_string(kat_path())
-        .expect("tests/kat/params_hash.json must exist");
+    let kat_text =
+        std::fs::read_to_string(kat_path()).expect("tests/kat/params_hash.json must exist");
     let mut kat: Value = serde_json::from_str(&kat_text).expect("KAT file is not valid JSON");
 
     let vectors = kat
@@ -119,7 +117,10 @@ fn params_hash_kat_matches_pinned_values() {
             .insert("expected".to_string(), expected_obj);
         let pretty = serde_json::to_string_pretty(&kat).unwrap();
         std::fs::write(kat_path(), pretty + "\n").unwrap();
-        eprintln!("[kat] refreshed {} entries → tests/kat/params_hash.json", computed.len());
+        eprintln!(
+            "[kat] refreshed {} entries → tests/kat/params_hash.json",
+            computed.len()
+        );
         return;
     }
 

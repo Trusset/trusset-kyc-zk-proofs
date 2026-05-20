@@ -8,10 +8,32 @@ authors.workspace = true
 repository.workspace = true
 description = "Age threshold predicate circuit: prove (current_epoch_days - dob_days) >= min_age_days without disclosing dob_days."
 
+[features]
+# Stage 18 (2026-05-20): default flipped to `prod-proofs-age`.
+default = ["prod-proofs-age"]
+stub-proofs = ["trusset-circuits-common/stub-proofs"]
+prod-proofs-age = [
+    "trusset-circuits-common/prod-proofs-age",
+    "dep:winterfell",
+    "dep:winter-air",
+    "dep:winter-math",
+    "dep:winter-crypto",
+    "dep:winter-utils",
+]
+
 [dependencies]
-trusset-circuits-common = { path = "../common" }
+trusset-circuits-common = { path = "../common", default-features = false }
 sha2 = "0.10"
 zeroize = { version = "1.8", features = ["derive"] }
+
+winterfell = { version = "0.13", optional = true }
+winter-air = { version = "0.13", optional = true }
+winter-math = { version = "0.13", optional = true }
+winter-crypto = { version = "0.13", optional = true }
+winter-utils = { version = "0.13", optional = true }
+
+[dev-dependencies]
+hex = "0.4"
 
 [lints]
 workspace = true

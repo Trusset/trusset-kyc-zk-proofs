@@ -184,16 +184,43 @@ verifier can tell which mode produced the bundle.
 
 ## What v2 does NOT yet protect
 
-These are Phase 2B / future work, tracked but not blocking v2.0.0
-release as Phase 2A:
+Phase 2B Step-B is complete through Stage 25 (2026-05-20). All four
+circuits ship full in-AIR cryptographic soundness; production mode is
+the workspace default. Remaining gaps are operational (not
+cryptographic) and tracked for future work:
 
-- **Real STARK proving**: Phase 2A produces structured 120-byte
-  placeholder proofs that bind witness to public inputs via Rescue but
-  do NOT carry actual STARK security. The manifest carries
-  `mode: "stub"` and counterparty verifiers refuse the bundle by
-  default. Real Winterfell AIRs with Rescue gates are Phase 2B.
+- **WASM runtime parity** (Phase 2C Stage 30, ✓ closed 2026-05-20):
+  Structural drift detection lives in
+  [verifier/tests/wasm_build_check.rs](../verifier/tests/wasm_build_check.rs)
+  (5 tests: export shape, wasm-bindgen ABI imports, section-table
+  well-formedness, byte-determinism). Runtime parity now lives in
+  [tests/e2e/wasm_parity.sh](../tests/e2e/wasm_parity.sh): generates a
+  fresh production bundle, runs the native CLI + WASM-in-Node
+  (wasm-bindgen-cli → `--target nodejs`) on the same input,
+  asserts byte-identical `VerifyReport` JSON. Includes a negative
+  case (single-byte proof tamper) that confirms both implementations
+  reach the same `overall_pass = false` failure mode. Operator
+  prereq: `cargo install wasm-bindgen-cli --version 0.2.121 --locked`
+  (version pinned to the Cargo.lock).
+- **Prove-time optimization** (Phase 2C): Three circuits exceed
+  spec §13.6 prove-time targets — `tier_threshold` 565 ms vs 200 ms
+  target (structural, requires Winterfell-internal profiling),
+  `preimage_knowledge` 362 ms vs 250 ms target (16-bit decomp LDE
+  cost), `set_membership` 1768 ms vs 700 ms target (32× larger
+  trace from in-AIR Merkle walk). Verify time and proof size meet
+  spec for all four circuits. Filed as Phase 2C optimization; not
+  soundness-blocking.
 - **Post-quantum manifest signing**: ed25519 is pre-quantum. Switch to
   Dilithium once NIST PQC signature standards stabilize.
 - **HSM integration**: master key currently arrives via env var. HSM
   backing is the spec §17 / Phase ∞ workstream — the API surface stays
   the same.
+
+**Development bundles** (`npm start -- --skip-proofs`) continue to
+emit `manifest.mode == "stub"` with zero-byte proof files. These are
+intended for CI smoke runs and operator-internal testing; counterparty
+verifiers reject them by default (strict mode is the post-Stage-23
+default). To accept stub bundles for development, pass
+`--accept-stub` to the verifier. The cryptographic chain (signature,
+merkle root, leaf hash) remains intact in stub mode; only the AIR
+proof bytes are zeroed.

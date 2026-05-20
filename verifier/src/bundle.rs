@@ -22,10 +22,7 @@ pub fn load_bundle(path: &Path) -> Result<LoadedBundle, VerifyError> {
         .map_err(|e| VerifyError::Io(format!("manifest.json: {}", e)))?;
     let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
 
-    let kyc_hash_file_text = match std::fs::read_to_string(path.join("kycHash.hex")) {
-        Ok(s) => s,
-        Err(_) => String::new(),
-    };
+    let kyc_hash_file_text = std::fs::read_to_string(path.join("kycHash.hex")).unwrap_or_default();
 
     let signature = std::fs::read(path.join("manifest.sig")).ok();
 

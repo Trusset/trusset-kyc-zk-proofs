@@ -36,7 +36,7 @@ use std::path::Path;
 
 use serde::Serialize;
 use trusset_bundle_format::leaf::{compute_leaf_hash, compute_proof_digest};
-use trusset_bundle_format::manifest::{canonical_signing_bytes, Manifest};
+use trusset_bundle_format::manifest::{canonical_signing_bytes, Manifest, MODE_PRODUCTION};
 use trusset_bundle_format::merkle::compute_root;
 use trusset_bundle_format::sign;
 use trusset_circuits_common::{digest_to_hex, hex_to_digest, CircuitId, Digest};
@@ -130,7 +130,7 @@ pub fn verify_loaded(loaded: &bundle::LoadedBundle, opts: &VerifyOptions) -> Ver
     let manifest = &loaded.manifest;
 
     let layout_ok = loaded.layout_ok;
-    let mode_acceptable = manifest.mode == "production" || opts.accept_stub;
+    let mode_acceptable = manifest.mode == MODE_PRODUCTION || opts.accept_stub;
     let kyc_hash_file_matches = loaded.kyc_hash_file_text.trim() == manifest.kyc_hash;
 
     // Signature: recompute the canonical signing view of the manifest.
@@ -156,14 +156,13 @@ pub fn verify_loaded(loaded: &bundle::LoadedBundle, opts: &VerifyOptions) -> Ver
     }
 
     // Merkle root: only meaningful if every leaf produced a hash.
-    let merkle_root_valid = if leaf_hashes.len() == manifest.leaves.len()
-        && !manifest.leaves.is_empty()
-    {
-        let (root, _) = compute_root(&leaf_hashes);
-        digest_to_hex(&root) == manifest.kyc_hash
-    } else {
-        false
-    };
+    let merkle_root_valid =
+        if leaf_hashes.len() == manifest.leaves.len() && !manifest.leaves.is_empty() {
+            let (root, _) = compute_root(&leaf_hashes);
+            digest_to_hex(&root) == manifest.kyc_hash
+        } else {
+            false
+        };
 
     let overall_pass = layout_ok
         && mode_acceptable
@@ -247,20 +246,28 @@ fn verify_leaf(
     if entry.circuit_id != circuit_id.as_u8() {
         report.reason = Some(format!(
             "circuit_id byte ({}) disagrees with circuit name ({})",
-            entry.circuit_id,
-            entry.circuit
+            entry.circuit_id, entry.circuit
         ));
         return (None, report);
     }
 
-    let circuit_verify_ok =
+    // Stage 18: zero-byte proofs are the operator-facing `--skip-proofs`
+    // mode (manifest.mode == "stub"). The AIR verification is skipped
+    // for these; the policy-level mode check (above, mode_acceptable)
+    // is responsible for rejecting them in strict mode. The leaf hash
+    // chain still binds the empty proof_digest, so substituting a
+    // non-empty proof would break the leaf hash comparison below.
+    let circuit_verify_ok = if proof_bytes.is_empty() {
+        true
+    } else {
         match dispatch_verify(circuit_id, &commitment, &entry.public_inputs, proof_bytes) {
             Ok(()) => true,
             Err(reason) => {
                 report.reason = Some(reason);
                 return (None, report);
             }
-        };
+        }
+    };
 
     // Recompute leaf hash and compare.
     let wallet_bytes = match decode_wallet(&manifest.wallet_address) {
@@ -382,5 +389,108 @@ mod tests {
         assert!(decode_wallet("not-an-address").is_none());
         assert!(decode_wallet("0xZZ").is_none());
         assert!(decode_wallet("0x123").is_none());
+    }
+
+    /// Pin every JSON field name produced by `VerifyReport` serialization.
+    ///
+    /// **Why this test is load-bearing**: the Rust verifier emits a JSON
+    /// report consumed by the TS CLI at [cli/src/verify.ts](../../cli/src/verify.ts).
+    /// The TS side has its own `VerifyReport` interface declaration with
+    /// hand-written field names. There is no shared schema between the
+    /// two — drift on either side is silent.
+    ///
+    /// Failure of this test means: an engineer renamed a `VerifyReport` /
+    /// `LeafReport` field in `lib.rs` without updating [cli/src/verify.ts](../../cli/src/verify.ts).
+    /// To fix: either revert the Rust rename or apply the matching rename
+    /// to the TS interface declaration AND to all TS call sites (look for
+    /// `report.<old_name>` references in `cli/src/verify.ts`).
+    ///
+    /// The fields enumerated here MUST match `cli/src/verify.ts`'s
+    /// `VerifyReport` and `LeafReport` interfaces verbatim.
+    #[test]
+    fn verify_report_json_field_names_are_pinned() {
+        let report = VerifyReport {
+            wallet_address: "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01".to_string(),
+            kyc_hash: "0x9f1c".to_string(),
+            leaf_count: 1,
+            layout_ok: true,
+            mode_acceptable: true,
+            kyc_hash_file_matches: true,
+            signature_valid: true,
+            merkle_root_valid: true,
+            leaves: vec![LeafReport {
+                field: "firstName".to_string(),
+                circuit: "preimage_knowledge".to_string(),
+                pass: true,
+                reason: None,
+            }],
+            overall_pass: true,
+        };
+
+        let json = serde_json::to_value(&report).unwrap();
+        let obj = json
+            .as_object()
+            .expect("VerifyReport serializes to JSON object");
+
+        // Every wire-name expected by cli/src/verify.ts MUST be present.
+        let expected_top_level = [
+            "wallet_address",
+            "kyc_hash",
+            "leaf_count",
+            "layout_ok",
+            "mode_acceptable",
+            "kyc_hash_file_matches",
+            "signature_valid",
+            "merkle_root_valid",
+            "leaves",
+            "overall_pass",
+        ];
+        for name in &expected_top_level {
+            assert!(
+                obj.contains_key(*name),
+                "VerifyReport JSON is missing wire field {:?} (TS CLI in cli/src/verify.ts expects this)",
+                name
+            );
+        }
+        // No surprise extra fields — adding a field to the Rust struct
+        // requires deliberately updating the TS interface AND this test.
+        assert_eq!(
+            obj.len(),
+            expected_top_level.len(),
+            "VerifyReport has {} JSON fields but {} are pinned in the wire-format test. \
+             Add the new field to cli/src/verify.ts:VerifyReport AND to expected_top_level here.",
+            obj.len(),
+            expected_top_level.len()
+        );
+
+        // LeafReport schema check.
+        let leaves = obj.get("leaves").unwrap().as_array().unwrap();
+        let leaf = leaves[0].as_object().unwrap();
+        let expected_leaf = ["field", "circuit", "pass", "reason"];
+        for name in &expected_leaf {
+            assert!(
+                leaf.contains_key(*name),
+                "LeafReport JSON is missing wire field {:?}",
+                name
+            );
+        }
+        assert_eq!(
+            leaf.len(),
+            expected_leaf.len(),
+            "LeafReport has {} JSON fields but {} are pinned",
+            leaf.len(),
+            expected_leaf.len()
+        );
+
+        // Type assertions on a handful of representative fields — catches
+        // a serde attribute change that flips bool to {true,false} string,
+        // or usize → i64 → string surprises.
+        assert!(obj["wallet_address"].is_string());
+        assert!(obj["leaf_count"].is_number());
+        assert!(obj["layout_ok"].is_boolean());
+        assert!(obj["overall_pass"].is_boolean());
+        assert!(obj["leaves"].is_array());
+        assert!(leaf["pass"].is_boolean());
+        assert!(leaf["reason"].is_null()); // None serializes to null
     }
 }

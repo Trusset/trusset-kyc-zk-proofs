@@ -15,13 +15,27 @@
 //! This matches what `trusset-list-commit` (Phase 4) will emit when ingesting
 //! a plain text list like ISO-3166 alpha-3.
 //!
-//! # Status: Phase 2A — see `preimage_knowledge` for stub-mode caveat.
+//! # Status
+//!
+//! - **Stub path** (`--features stub-proofs`, Phase 2A default).
+//! - **Prod-proofs path** (`--features prod-proofs-set`, Phase 2B):
+//!   real Winterfell roundtrip via `air`, `prover`, `verifier`. PLACEHOLDER
+//!   constraints — does not enforce Merkle opening yet.
+
+#[cfg(feature = "prod-proofs-set")]
+pub mod air;
+#[cfg(feature = "prod-proofs-set")]
+pub mod prover;
+#[cfg(feature = "prod-proofs-set")]
+pub mod verifier;
 
 use sha2::{Digest as _, Sha256};
+#[cfg(not(feature = "prod-proofs-set"))]
+use trusset_circuits_common::StubProof;
 use trusset_circuits_common::{
     bytes_to_field, compute_commitment, digest_to_bytes, hash_bytes_with_tag, hash_elements,
-    hash_two_with_tag, string_to_field_canonical, CircuitId, Digest, StubProof, StubProofError,
-    DIGEST_LEN_BYTES, NONCE_LEN, PUBLIC_DIGEST_TAG, SET_LEAF_TAG, SET_NODE_TAG,
+    hash_two_with_tag, nfc_canonicalize, CircuitId, Digest, StubProofError, DIGEST_LEN_BYTES,
+    NONCE_LEN, PUBLIC_DIGEST_TAG, SET_LEAF_TAG, SET_NODE_TAG,
 };
 use zeroize::Zeroize;
 
@@ -117,17 +131,27 @@ impl PublicInputs {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ValidateError {
     EmptyValue,
-    PathDepthMismatch { expected: u8, got: usize },
-    PathTooDeep { depth: usize, max: u8 },
+    PathDepthMismatch {
+        expected: u8,
+        got: usize,
+    },
+    PathTooDeep {
+        depth: usize,
+        max: u8,
+    },
     CommitmentMismatch,
     /// Walking the Merkle path from the witnessed value did not reach the
     /// public `set_root`. Maps to error code `E_LIST_MEMBER_MISSING`.
     NotInSet,
+    /// Winterfell prover failed (prod-proofs-set path only).
+    WinterfellProverError(String),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum VerifyError {
     StubProofMalformed(StubProofError),
+    #[cfg(feature = "prod-proofs-set")]
+    WinterfellVerifyError(verifier::AirVerifyError),
 }
 
 impl From<StubProofError> for VerifyError {
@@ -136,23 +160,38 @@ impl From<StubProofError> for VerifyError {
     }
 }
 
+/// NFC-canonicalize a value for the set-leaf hash. ASCII bypasses the
+/// unicode-normalization library cost; non-UTF-8 bytes pass through
+/// unchanged (defensive — list-commit tooling produces UTF-8 by
+/// construction).
+fn canonicalize_set_value(value_bytes: &[u8]) -> Vec<u8> {
+    if value_bytes.is_ascii() {
+        value_bytes.to_vec()
+    } else if let Ok(s) = core::str::from_utf8(value_bytes) {
+        nfc_canonicalize(s).into_bytes()
+    } else {
+        value_bytes.to_vec()
+    }
+}
+
 /// Compute the set-tree leaf digest for a (UTF-8, pre-NFC) value.
 /// `trusset-list-commit` uses the same routine when committing a list.
+///
+/// Stage 16 layout: input is `SET_LEAF_TAG (5 felts) ‖
+/// witness_to_felts(NFC(value)) (12 felts) = 17 felts`. Hashed via
+/// Rescue (3 absorption blocks). The `witness_to_felts` helper handles
+/// the `0x01` distinguishing suffix and zero-padding to a fixed
+/// `MAX_PADDED_WITNESS_FELTS = 12` count, which keeps the in-AIR trace
+/// shape fixed.
+///
+/// **Operator action on Stage 16 upgrade**: the `set_leaf_digest` value
+/// for every set entry changes vs Stage 15 (which hashed unpadded
+/// `bytes_to_field(value ‖ 0x01)`). Re-run `trusset-list-commit` for
+/// every list after upgrade; `CIRCUITS_VERSION` stays at 2 (the JSON
+/// wire format doesn't shift — only the internal set_leaf hash value).
 pub fn set_leaf_digest(value_bytes: &[u8]) -> Digest {
-    // Canonicalize to felts (NFC + 7-byte chunks) so a list committed from
-    // text aligns with witnesses derived from JSON / CSV inputs that share
-    // the same NFC canonical form (plan edge case 7).
-    let value_str = core::str::from_utf8(value_bytes).unwrap_or_default();
-    let felts = if value_bytes.is_ascii() && !value_str.is_empty() {
-        // Fast path: ASCII bypass for the common case (ISO country codes).
-        bytes_to_field(value_bytes)
-    } else if !value_str.is_empty() {
-        string_to_field_canonical(value_str)
-    } else {
-        // Non-UTF-8 values are still hashed as raw bytes — list-commit
-        // tooling produces UTF-8 by construction, but defensive.
-        bytes_to_field(value_bytes)
-    };
+    let canonical = canonicalize_set_value(value_bytes);
+    let felts = witness_to_felts(&canonical);
     let tag_felts = bytes_to_field(&SET_LEAF_TAG);
     let mut combined = tag_felts;
     combined.extend_from_slice(&felts);
@@ -172,8 +211,59 @@ pub fn walk_merkle_path(leaf: Digest, path: &[PathStep]) -> Digest {
     node
 }
 
+/// Maximum number of felts returned by `witness_to_felts`, regardless of
+/// the actual value length. Sized so the **total Rescue input** is
+/// exactly 24 felts (= 3 absorption blocks × 8 rate width):
+/// `tag(5) + circuit_id(1) + length_felt(1) + padded_witness(12) + nonce(5) = 24`.
+///
+/// 12 felts accommodates any value up to `83 bytes` (= `12 × 7 − 1` for
+/// the `0x01` suffix), well above the workspace-pinned
+/// `MAX_SET_VALUE_BYTES_PADDED = 64` cap.
+///
+/// Why fixed? Same rationale as preimage_knowledge — Winterfell needs a
+/// fixed trace shape. The `0x01` suffix marks end-of-value and
+/// zero-padding distinguishes shorter values from longer-with-trailing-
+/// zeros variants.
+pub const MAX_PADDED_WITNESS_FELTS: usize = 12;
+
+/// Canonical felt-encoding of the witness value for the v2 commitment
+/// scheme. Returns AT LEAST `MAX_PADDED_WITNESS_FELTS` felts (exactly
+/// that count for any value with `len ≤ MAX_SET_VALUE_BYTES_PADDED = 64`).
+///
+/// Encoding:
+/// 1. Append `0x01` distinguishing suffix to `value`.
+/// 2. Chunk into 7-byte little-endian Goldilocks limbs via `bytes_to_field`.
+/// 3. Zero-pad the felt vector up to `MAX_PADDED_WITNESS_FELTS`.
+///
+/// For values larger than the AIR's max, the natural felt count exceeds
+/// `MAX_PADDED_WITNESS_FELTS` and no shrinking happens — `commit()`
+/// still produces a digest, but `validate()` rejects oversize values
+/// before the AIR ever runs. The AIR's trace builder asserts the exact
+/// felt count.
+///
+/// Mirrors `preimage_knowledge::witness_to_felts` exactly in structure.
+/// Collision-freeness argument is identical (the `0x01` suffix prevents
+/// `bytes_to_field` from collapsing trailing-zero variants within the
+/// same 7-byte chunk; zero-padding to a fixed felt count makes the trace
+/// shape fixed for the AIR while the suffix carries the distinguishing
+/// information).
+pub fn witness_to_felts(value: &[u8]) -> Vec<trusset_circuits_common::Felt> {
+    let mut padded = Vec::with_capacity(value.len() + 1);
+    padded.extend_from_slice(value);
+    padded.push(0x01);
+    let mut felts = bytes_to_field(&padded);
+    while felts.len() < MAX_PADDED_WITNESS_FELTS {
+        felts.push(trusset_circuits_common::Felt::new(0));
+    }
+    felts
+}
+
 pub fn commit(witness: &Witness) -> Digest {
-    compute_commitment(&witness.value, &witness.nonce)
+    compute_commitment(
+        CIRCUIT_ID,
+        &witness_to_felts(&witness.value),
+        &witness.nonce,
+    )
 }
 
 pub fn validate(
@@ -196,7 +286,11 @@ pub fn validate(
             max: MAX_SET_DEPTH,
         });
     }
-    let recomputed = compute_commitment(&witness.value, &witness.nonce);
+    let recomputed = compute_commitment(
+        CIRCUIT_ID,
+        &witness_to_felts(&witness.value),
+        &witness.nonce,
+    );
     if recomputed != public.commitment {
         return Err(ValidateError::CommitmentMismatch);
     }
@@ -208,27 +302,47 @@ pub fn validate(
     Ok(())
 }
 
-/// # Phase 2B TODO
-/// Real Winterfell AIR must enforce:
-///   1. Rescue commitment opens correctly over `(value_padded, nonce)`.
-///   2. Each Merkle step computes `parent = Rescue(SET_NODE_TAG ‖ a ‖ b)` with
-///      `(a, b) = side ? (sibling, node) : (node, sibling)`.
-///   3. After `set_depth` steps, the resulting node equals `set_root`.
-///   4. The first leaf hash equals `Rescue(SET_LEAF_TAG ‖ value_felts)`.
 pub fn prove(
     witness: &Witness,
     public: &PublicInputs,
     params: &Params,
 ) -> Result<Vec<u8>, ValidateError> {
     validate(witness, public, params)?;
-    let proof = StubProof::build(CIRCUIT_ID, public.commitment, public.digest());
-    Ok(proof.to_bytes().to_vec())
+    #[cfg(feature = "prod-proofs-set")]
+    {
+        use trusset_circuits_common::stark_options;
+        let pi = prover::public_to_air(&public.commitment, &public.set_root, public.set_depth);
+        let seed = [0u8; 32];
+        let bytes = prover::build_proof(
+            &witness.value,
+            &witness.nonce,
+            &witness.merkle_path,
+            &pi,
+            stark_options(),
+            &seed,
+        )
+        .map_err(|e| ValidateError::WinterfellProverError(format!("{e:?}")))?;
+        Ok(bytes)
+    }
+    #[cfg(not(feature = "prod-proofs-set"))]
+    {
+        let proof = StubProof::build(CIRCUIT_ID, public.commitment, public.digest());
+        Ok(proof.to_bytes().to_vec())
+    }
 }
 
 pub fn verify(proof_bytes: &[u8], public: &PublicInputs) -> Result<(), VerifyError> {
-    let parsed = StubProof::from_bytes(proof_bytes)?;
-    parsed.check(CIRCUIT_ID, &public.commitment, &public.digest())?;
-    Ok(())
+    #[cfg(feature = "prod-proofs-set")]
+    {
+        let pi = prover::public_to_air(&public.commitment, &public.set_root, public.set_depth);
+        verifier::verify_proof(proof_bytes, pi).map_err(VerifyError::WinterfellVerifyError)
+    }
+    #[cfg(not(feature = "prod-proofs-set"))]
+    {
+        let parsed = StubProof::from_bytes(proof_bytes)?;
+        parsed.check(CIRCUIT_ID, &public.commitment, &public.digest())?;
+        Ok(())
+    }
 }
 
 /// Build a complete binary Merkle tree from a list of value byte-strings and
@@ -238,7 +352,10 @@ pub fn verify(proof_bytes: &[u8], public: &PublicInputs) -> Result<(), VerifyErr
 /// Trees are padded to the next power of two by duplicating the last leaf —
 /// matches the v1 sorted Merkle convention (plan §"Output bundle").
 pub fn build_set_tree(values: &[&[u8]]) -> (Digest, u8, Vec<Digest>) {
-    assert!(!values.is_empty(), "cannot build a set tree from zero values");
+    assert!(
+        !values.is_empty(),
+        "cannot build a set tree from zero values"
+    );
     let mut leaves: Vec<Digest> = values.iter().map(|v| set_leaf_digest(v)).collect();
     // Round to power of two by duplicating last.
     let target = leaves.len().next_power_of_two().max(2);
@@ -266,7 +383,11 @@ pub fn inclusion_path(leaves: &[Digest], index: usize) -> Vec<PathStep> {
     while layer.len() > 1 {
         let pair = idx ^ 1;
         let sibling = layer[pair];
-        let side = if idx & 1 == 0 { Side::Left } else { Side::Right };
+        let side = if idx & 1 == 0 {
+            Side::Left
+        } else {
+            Side::Right
+        };
         path.push(PathStep { sibling, side });
         let mut next = Vec::with_capacity(layer.len() / 2);
         for chunk in layer.chunks(2) {
@@ -292,7 +413,7 @@ mod tests {
         let path = inclusion_path(&leaves, pick);
         let nonce = [0x44; NONCE_LEN];
         let value = values[pick].to_vec();
-        let commitment = compute_commitment(&value, &nonce);
+        let commitment = compute_commitment(CIRCUIT_ID, &witness_to_felts(&value), &nonce);
         let witness = Witness {
             value,
             nonce,
@@ -313,6 +434,111 @@ mod tests {
     fn build_tree_correct_depth_for_four_leaves() {
         let (_, depth, _) = build_set_tree(&fixture_list());
         assert_eq!(depth, 2);
+    }
+
+    /// Regression: the v2 commitment for set_membership must distinguish
+    /// byte values that differ only in trailing-zero bytes within the
+    /// same 7-byte chunk. The `0x01` suffix in `witness_to_felts` enforces
+    /// this.
+    #[test]
+    fn commitment_distinguishes_trailing_zero_byte_within_chunk() {
+        let nonce = [0x44; NONCE_LEN];
+        let c_short = compute_commitment(CIRCUIT_ID, &witness_to_felts(b"DEU"), &nonce);
+        let c_with_zero = compute_commitment(CIRCUIT_ID, &witness_to_felts(b"DEU\0"), &nonce);
+        assert_ne!(
+            c_short, c_with_zero,
+            "DEU vs DEU\\0 must commit distinctly under v2 set commitment"
+        );
+    }
+
+    /// Regression: `set_leaf_digest` must distinguish byte values that
+    /// differ only in trailing-zero bytes within the same 7-byte chunk.
+    /// Previously `bytes_to_field("DEU")` and `bytes_to_field("DEU\0")`
+    /// collapsed to the same `Felt`, producing identical Merkle leaves —
+    /// two distinct set values would occupy the same tree position. The
+    /// `0x01` suffix inside `set_leaf_digest` (mirroring the
+    /// `witness_to_felts` fix) closes this gap.
+    #[test]
+    fn set_leaf_digest_distinguishes_trailing_zero_byte_within_chunk() {
+        let leaf_no_zero = set_leaf_digest(b"DEU");
+        let leaf_one_zero = set_leaf_digest(b"DEU\0");
+        let leaf_two_zeros = set_leaf_digest(b"DEU\0\0");
+        assert_ne!(
+            leaf_no_zero, leaf_one_zero,
+            "DEU vs DEU\\0 leaves must differ"
+        );
+        assert_ne!(
+            leaf_no_zero, leaf_two_zeros,
+            "DEU vs DEU\\0\\0 leaves must differ"
+        );
+        assert_ne!(
+            leaf_one_zero, leaf_two_zeros,
+            "DEU\\0 vs DEU\\0\\0 leaves must differ"
+        );
+    }
+
+    /// Regression: `set_leaf_digest` for the empty value vs a single zero
+    /// byte must produce distinct leaves.
+    #[test]
+    fn set_leaf_digest_distinguishes_empty_from_single_zero() {
+        let leaf_empty = set_leaf_digest(b"");
+        let leaf_zero = set_leaf_digest(b"\0");
+        assert_ne!(
+            leaf_empty, leaf_zero,
+            "empty value and single zero byte must produce distinct leaves"
+        );
+    }
+
+    /// `witness_to_felts` must always return at least `MAX_PADDED_WITNESS_FELTS`
+    /// felts (exactly that count for any value within the AIR-trace cap) so
+    /// the downstream AIR can use a fixed trace shape.
+    #[test]
+    fn witness_to_felts_padding_returns_fixed_felt_count_for_in_range_values() {
+        for len in [
+            0usize, 1, 3, // ISO 3166 country codes
+            7, 8, 32, // document codes
+            63, 64, // MAX_SET_VALUE_BYTES_PADDED
+        ] {
+            let value: Vec<u8> = (0u8..(len % 256) as u8).collect();
+            let value = if value.len() < len {
+                let mut v = value;
+                v.resize(len, 0xa5);
+                v
+            } else {
+                value
+            };
+            let felts = witness_to_felts(&value);
+            assert_eq!(
+                felts.len(),
+                MAX_PADDED_WITNESS_FELTS,
+                "value.len() = {len} should produce exactly {} felts",
+                MAX_PADDED_WITNESS_FELTS
+            );
+        }
+    }
+
+    /// Distinct-length boundary check at the chunk boundary (6/7 bytes
+    /// fit in one chunk-with-suffix, 7/8 cross into a second chunk).
+    #[test]
+    fn padded_witness_distinguishes_different_lengths_at_chunk_boundaries() {
+        let nonce = [0x88; NONCE_LEN];
+        let c6 = compute_commitment(CIRCUIT_ID, &witness_to_felts(&[0xaa; 6]), &nonce);
+        let c7 = compute_commitment(CIRCUIT_ID, &witness_to_felts(&[0xaa; 7]), &nonce);
+        assert_ne!(c6, c7, "6-byte and 7-byte values must commit distinctly");
+    }
+
+    /// Oversize values produce more than the AIR-fixed felt count. The AIR
+    /// trace builder will assert MAX_PADDED_WITNESS_FELTS exactly;
+    /// `validate()` rejects oversize values before the AIR sees them.
+    #[test]
+    fn witness_to_felts_oversize_value_exceeds_max() {
+        let too_long = vec![0u8; 200];
+        let felts = witness_to_felts(&too_long);
+        assert!(
+            felts.len() > MAX_PADDED_WITNESS_FELTS,
+            "oversize value should produce more than {} felts",
+            MAX_PADDED_WITNESS_FELTS
+        );
     }
 
     #[test]
@@ -388,10 +614,10 @@ mod tests {
     fn validate_rejects_non_member() {
         let list = fixture_list();
         let (mut w, p, params) = witness_for(&list, 0); // "DEU"
-        // Lie about the value while keeping the same path → root won't match.
+                                                        // Lie about the value while keeping the same path → root won't match.
         w.value = b"XYZ".to_vec();
         w.nonce = [0x55; NONCE_LEN];
-        let bad_commitment = compute_commitment(&w.value, &w.nonce);
+        let bad_commitment = compute_commitment(CIRCUIT_ID, &witness_to_felts(&w.value), &w.nonce);
         let p_bad = PublicInputs {
             commitment: bad_commitment,
             ..p
@@ -404,7 +630,10 @@ mod tests {
         let list = fixture_list();
         let (w, mut p, params) = witness_for(&list, 1);
         p.commitment[0] = trusset_circuits_common::Felt::new(99);
-        assert_eq!(validate(&w, &p, &params), Err(ValidateError::CommitmentMismatch));
+        assert_eq!(
+            validate(&w, &p, &params),
+            Err(ValidateError::CommitmentMismatch)
+        );
     }
 
     #[test]
@@ -441,10 +670,8 @@ mod tests {
         let set_leaf = set_leaf_digest(v);
         let mut subject_leaf_bytes = Vec::new();
         subject_leaf_bytes.extend_from_slice(v);
-        let subject_leaf = trusset_circuits_common::hash_bytes_with_tag(
-            &trusset_circuits_common::LEAF_TAG,
-            v,
-        );
+        let subject_leaf =
+            trusset_circuits_common::hash_bytes_with_tag(&trusset_circuits_common::LEAF_TAG, v);
         assert_ne!(set_leaf, subject_leaf);
     }
 
@@ -485,5 +712,152 @@ mod tests {
             let path = inclusion_path(&leaves, idx);
             assert_eq!(walk_merkle_path(leaves[idx], &path), root);
         }
+    }
+
+    // -------------------------------------------------------------
+    // AIR-time negative-witness sweeps (Stage 14)
+    //
+    // Same pattern as preimage_knowledge: bypass `validate()` and call
+    // `prover::build_proof` directly. The AIR's commitment-opening
+    // boundary at row 44 MUST reject witnesses that don't open the
+    // public commitment.
+    //
+    // The Merkle-walk predicate (set_leaf + set_depth conditional-swap
+    // rounds reaching set_root) is still enforced by `validate()`
+    // OUTSIDE the AIR until the in-AIR Merkle walk ships (Stage 15+
+    // novel cryptographic work).
+    // -------------------------------------------------------------
+
+    #[cfg(feature = "prod-proofs-set")]
+    fn try_prove_set_air_only(
+        value_for_trace: &[u8],
+        nonce_for_trace: [u8; NONCE_LEN],
+        path_for_trace: Vec<PathStep>,
+        public_commitment: trusset_circuits_common::Digest,
+        set_root: trusset_circuits_common::Digest,
+        set_depth: u8,
+    ) -> Result<Vec<u8>, String> {
+        use trusset_circuits_common::stark_options;
+        let pi = prover::public_to_air(&public_commitment, &set_root, set_depth);
+        // In debug mode, Winterfell's prover triggers `debug_assert!` panics
+        // when the trace violates boundary constraints — we catch those. In
+        // release mode, `debug_assert!`s are compiled out and the prover
+        // happily emits invalid-looking bytes; the rejection then comes from
+        // the verifier. Calling both ensures the wrapper correctly reports
+        // rejection in either build profile.
+        let path_clone = path_for_trace.clone();
+        let prove_result = std::panic::catch_unwind(move || {
+            prover::build_proof(
+                value_for_trace,
+                &nonce_for_trace,
+                &path_clone,
+                &pi,
+                stark_options(),
+                &[0u8; 32],
+            )
+        });
+        let proof_bytes = match prove_result {
+            Ok(Ok(b)) => b,
+            Ok(Err(e)) => return Err(format!("ProverError: {e:?}")),
+            Err(p) => {
+                let msg = p
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                return Err(format!("Prover panic: {msg}"));
+            }
+        };
+        // Verify the produced bytes against the same public inputs. If the
+        // trace was inconsistent with the public commitment or set_root, this
+        // is where the rejection materializes in release mode.
+        let pi_verify = prover::public_to_air(&public_commitment, &set_root, set_depth);
+        match verifier::verify_proof(&proof_bytes, pi_verify) {
+            Ok(()) => Ok(proof_bytes),
+            Err(e) => Err(format!("VerifierError: {e:?}")),
+        }
+    }
+
+    #[cfg(feature = "prod-proofs-set")]
+    #[test]
+    fn air_rejects_different_value_for_same_commitment() {
+        let list = fixture_list();
+        let (w, p, _) = witness_for(&list, 0); // DEU
+                                               // Try to prove with "FRA" while keeping DEU's public commitment.
+        let result = try_prove_set_air_only(
+            b"FRA",
+            w.nonce,
+            w.merkle_path.clone(),
+            p.commitment,
+            p.set_root,
+            p.set_depth,
+        );
+        assert!(
+            result.is_err(),
+            "AIR must reject 'FRA' against DEU's commitment, got Ok"
+        );
+    }
+
+    #[cfg(feature = "prod-proofs-set")]
+    #[test]
+    fn air_rejects_different_nonce_for_same_commitment() {
+        let list = fixture_list();
+        let (w, p, _) = witness_for(&list, 1); // FRA with nonce = [0x44; 32]
+        let alt_nonce = [0x99u8; NONCE_LEN];
+        let result = try_prove_set_air_only(
+            &w.value,
+            alt_nonce,
+            w.merkle_path.clone(),
+            p.commitment,
+            p.set_root,
+            p.set_depth,
+        );
+        assert!(
+            result.is_err(),
+            "AIR must reject mismatched nonce for same value, got Ok"
+        );
+    }
+
+    #[cfg(feature = "prod-proofs-set")]
+    #[test]
+    fn air_rejects_tampered_commitment_limbs() {
+        let list = fixture_list();
+        let (w, p, _) = witness_for(&list, 2); // USA
+        let mut tampered = p.commitment;
+        tampered[1] = trusset_circuits_common::Felt::new(0xfeedface_u64);
+        let result = try_prove_set_air_only(
+            &w.value,
+            w.nonce,
+            w.merkle_path.clone(),
+            tampered,
+            p.set_root,
+            p.set_depth,
+        );
+        assert!(
+            result.is_err(),
+            "AIR must reject tampered commitment, got Ok"
+        );
+    }
+
+    #[cfg(feature = "prod-proofs-set")]
+    #[test]
+    fn air_accepts_honest_witness() {
+        // Positive control: honest witness must pass through the same
+        // try_prove_set_air_only path.
+        let list = fixture_list();
+        let (w, p, _) = witness_for(&list, 3); // GBR
+        let result = try_prove_set_air_only(
+            &w.value,
+            w.nonce,
+            w.merkle_path.clone(),
+            p.commitment,
+            p.set_root,
+            p.set_depth,
+        );
+        assert!(
+            result.is_ok(),
+            "AIR must accept honest witness, got {:?}",
+            result.err()
+        );
     }
 }

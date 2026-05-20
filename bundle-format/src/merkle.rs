@@ -14,7 +14,10 @@ use trusset_circuits_common::{digest_to_bytes, hash_two, Digest};
 /// The caller uses `sorted_indices` to reorder the manifest's `leaves[]` to
 /// match the tree's leaf order.
 pub fn compute_root(leaves: &[Digest]) -> (Digest, Vec<usize>) {
-    assert!(!leaves.is_empty(), "cannot build Merkle root from empty leaves");
+    assert!(
+        !leaves.is_empty(),
+        "cannot build Merkle root from empty leaves"
+    );
 
     // Sort by byte representation. Stable for equal hashes (shouldn't happen
     // in practice — two equal leaves means two identical leaf hashes).

@@ -39,7 +39,7 @@ program
   .command('hash', { isDefault: true })
   .description('Process /input, prove each subject, write bundles to /output')
   .option('--raw', 'Omit the index column from the batched CSV')
-  .option('--skip-proofs', 'Stub mode: emit zero-byte proofs, mark manifest mode:"stub" (not yet wired)')
+  .option('--skip-proofs', 'Development mode: emit zero-byte proofs, mark manifest mode:"stub" (default since Stage 18 is mode:"production" with real Winterfell STARK proofs)')
   .option('--isolate', 'Spawn one prover process per subject (debugging)')
   .option('--no-deterministic', 'Allow OS randomness for nonces (debugging)')
   .option('--json', 'Emit structured JSON to stdout instead of human progress')
@@ -175,15 +175,16 @@ program
   .command('verify <wallet>')
   .description('Verify a per-subject bundle in /output against a pinned public key')
   .requiredOption('--public-key <hex>', 'Operator ed25519 public key (32 bytes hex)')
-  .option('--strict', 'Reject bundles with mode != "production"')
+  .option('--strict', 'No-op (strict mode is the default since Stage 18)')
+  .option('--accept-stub', 'Accept bundles with mode == "stub" (development/CI bundles built with --skip-proofs)')
   .option('--json', 'Emit JSON report')
-  .action(async (wallet: string, options: { publicKey: string; strict?: boolean; json?: boolean }) => {
+  .action(async (wallet: string, options: { publicKey: string; strict?: boolean; acceptStub?: boolean; json?: boolean }) => {
     try {
       const bundlePath = path.join(outputDir(), wallet);
       const result = await runVerify({
         bundlePath,
         publicKeyHex: options.publicKey,
-        strict: options.strict,
+        acceptStub: options.acceptStub,
       });
       if (options.json) {
         if (result.report) console.log(JSON.stringify(result.report, null, 2));

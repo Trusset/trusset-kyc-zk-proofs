@@ -9,7 +9,11 @@ repository.workspace = true
 description = "STARK bundle verifier: per-leaf proof, Merkle root, and ed25519 manifest signature checks. Compiles to native and wasm32."
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+# Native builds: rlib only. The WASM build (scripts/build.sh) invokes
+# `cargo rustc ... --crate-type=cdylib` to add the cdylib at command time;
+# declaring cdylib here would collide with the sibling `trusset-verifier-cli`
+# bin at link time during `cargo test --workspace` (cargo issue #6313).
+crate-type = ["rlib"]
 
 [[bin]]
 name = "trusset-verifier-cli"

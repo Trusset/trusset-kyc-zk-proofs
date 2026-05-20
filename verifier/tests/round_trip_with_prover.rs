@@ -130,9 +130,26 @@ fn verifier_accepts_a_real_bundle_in_permissive_mode() {
 
 #[test]
 fn strict_mode_rejects_stub_bundle() {
-    // Phase 2A always emits mode="stub". Strict mode must refuse it.
+    // Stage 18: default `mode == "production"`. To exercise the
+    // strict-mode rejection of stub bundles, we explicitly build a
+    // `skip_proofs` bundle (which retains `mode: "stub"`) and verify
+    // strict mode refuses it.
     let tmp = tempfile::tempdir().unwrap();
-    let (bundle_path, pk) = build_and_get_path(&tmp);
+    let signing = SigningSecret::from_hex(signing_hex()).unwrap();
+    let pk = signing.public_key();
+    let mut job = fixture_job(tmp.path().to_str().unwrap());
+    job.skip_proofs = true;
+    let report = build_subject_bundle(
+        &job,
+        &job.subjects[0],
+        &master_key(),
+        &signing,
+        &config_hash(),
+        now_iso(),
+    )
+    .unwrap();
+    let bundle_path = report.bundle_path;
+
     let report = verify_bundle(
         &bundle_path,
         &VerifyOptions {
@@ -217,11 +234,7 @@ fn verifier_rejects_tampered_manifest_field() {
     // Tamper with the manifest's kycHash so the signing payload changes.
     let manifest_path = bundle_path.join("manifest.json");
     let original = std::fs::read_to_string(&manifest_path).unwrap();
-    let tampered = original.replacen(
-        r#""kycHash": "0x"#,
-        r#""kycHash": "0xff"#,
-        1,
-    );
+    let tampered = original.replacen(r#""kycHash": "0x"#, r#""kycHash": "0xff"#, 1);
     assert_ne!(original, tampered, "tamper edit must replace something");
     std::fs::write(&manifest_path, tampered).unwrap();
 
@@ -266,7 +279,10 @@ fn verifier_rejects_swapped_circuit_id() {
     let manifest_path = bundle_path.join("manifest.json");
     let original = std::fs::read_to_string(&manifest_path).unwrap();
     let text = original.replace(r#""circuitId": 4"#, r#""circuitId": 3"#);
-    assert_ne!(original, text, "expected exactly one occurrence of circuitId: 4");
+    assert_ne!(
+        original, text,
+        "expected exactly one occurrence of circuitId: 4"
+    );
     std::fs::write(&manifest_path, text).unwrap();
 
     let report = verify_bundle(
@@ -322,11 +338,7 @@ fn verifier_rejects_swapped_set_root() {
     assert!(!report.signature_valid);
     // And the country leaf's publicDigest no longer matches what the
     // verifier recomputes from the (tampered) setRoot.
-    let country_leaf = report
-        .leaves
-        .iter()
-        .find(|l| l.field == "country")
-        .unwrap();
+    let country_leaf = report.leaves.iter().find(|l| l.field == "country").unwrap();
     assert!(!country_leaf.pass);
 }
 

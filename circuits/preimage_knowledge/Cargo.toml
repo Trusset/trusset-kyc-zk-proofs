@@ -8,10 +8,45 @@ authors.workspace = true
 repository.workspace = true
 description = "Preimage knowledge predicate circuit: prove knowledge of (value, nonce) such that Rescue(value || nonce) == commitment."
 
+[features]
+# Stage 18 (2026-05-20): default flipped to `prod-proofs-preimage`.
+default = ["prod-proofs-preimage"]
+
+# Stub-proof path (Phase 2A): 120-byte deterministic placeholder.
+stub-proofs = ["trusset-circuits-common/stub-proofs"]
+
+# Real Winterfell STARK path (Phase 2B). Enables `air`, `prover`, `verifier`
+# modules and routes `prove()` / `verify()` through them. Builds at workspace
+# default once Step 6 lands.
+prod-proofs-preimage = [
+    "trusset-circuits-common/prod-proofs-preimage",
+    "dep:winterfell",
+    "dep:winter-air",
+    "dep:winter-math",
+    "dep:winter-crypto",
+    "dep:winter-utils",
+]
+
 [dependencies]
-trusset-circuits-common = { path = "../common" }
+trusset-circuits-common = { path = "../common", default-features = false }
 sha2 = "0.10"
 zeroize = { version = "1.8", features = ["derive"] }
+
+# Winterfell stack: optional, only when `prod-proofs-preimage` is enabled.
+winterfell = { version = "0.13", optional = true }
+winter-air = { version = "0.13", optional = true }
+winter-math = { version = "0.13", optional = true }
+winter-crypto = { version = "0.13", optional = true }
+winter-utils = { version = "0.13", optional = true }
+
+[dev-dependencies]
+# Note: proptest 1.x pulls in rand 0.9 + getrandom 0.3 + cpufeatures 0.3
+# transitively, which collides with the cpufeatures 0.2 macros already
+# linked via sha2/blake3 in this workspace under rustc 1.91. Deferred to
+# follow-up — Phase 2B Step 2.b will land a hand-rolled negative-witness
+# test sweep that exercises the same coverage proptest would give without
+# the dep-graph collision.
+hex = "0.4"
 
 [lints]
 workspace = true

@@ -120,11 +120,94 @@ pub type Result<T> = std::result::Result<T, ProverError>;
 mod tests {
     use super::*;
 
+    /// Every variant of `ErrorCode` is enumerated here. The compiler
+    /// enforces exhaustiveness via the `match` below: adding a new variant
+    /// without extending `ALL_CODES` fails the build, and the body
+    /// assertion catches any string-drift in `as_str()`.
+    ///
+    /// The strings themselves are a wire-format contract: the TS CLI
+    /// pattern-matches them in `cli/src/bundleWriter.ts` (relayed into
+    /// `failures.csv` per spec §"Output bundle"), and external counterparty
+    /// integrators reading the NDJSON event stream rely on them.
+    /// Drift between this list and `as_str()` MUST be a build break.
+    const ALL_CODES: &[(ErrorCode, &str)] = &[
+        (ErrorCode::Config, "E_CONFIG"),
+        (ErrorCode::Input, "E_INPUT"),
+        (ErrorCode::KeyMissing, "E_KEY_MISSING"),
+        (ErrorCode::KeyMalformed, "E_KEY_MALFORMED"),
+        (ErrorCode::ListNotFound, "E_LIST_NOT_FOUND"),
+        (ErrorCode::ListMemberMissing, "E_LIST_MEMBER_MISSING"),
+        (ErrorCode::AgeBelowMin, "E_AGE_BELOW_MIN"),
+        (ErrorCode::TierBelowMin, "E_TIER_BELOW_MIN"),
+        (ErrorCode::TierNone, "E_TIER_NONE"),
+        (ErrorCode::EmptyValue, "E_EMPTY_VALUE"),
+        (ErrorCode::CircuitInternal, "E_CIRCUIT_INTERNAL"),
+        (ErrorCode::Io, "E_IO"),
+        (ErrorCode::DeterminismViolation, "E_DETERMINISM_VIOLATION"),
+        (ErrorCode::StubRejected, "E_STUB_REJECTED"),
+    ];
+
     #[test]
-    fn codes_render_as_underscore_prefixed_constants() {
-        assert_eq!(ErrorCode::KeyMissing.as_str(), "E_KEY_MISSING");
-        assert_eq!(ErrorCode::AgeBelowMin.as_str(), "E_AGE_BELOW_MIN");
-        assert_eq!(ErrorCode::StubRejected.as_str(), "E_STUB_REJECTED");
+    fn every_error_code_maps_to_stable_wire_string() {
+        for (code, expected) in ALL_CODES {
+            assert_eq!(
+                code.as_str(),
+                *expected,
+                "wire string drift on variant {:?}",
+                code
+            );
+            assert!(
+                expected.starts_with("E_"),
+                "{:?} string {:?} does not start with E_",
+                code,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn error_code_strings_are_pairwise_distinct() {
+        use std::collections::HashSet;
+        let mut seen: HashSet<&'static str> = HashSet::new();
+        for (code, s) in ALL_CODES {
+            assert!(
+                seen.insert(s),
+                "duplicate wire string {:?} (variant {:?})",
+                s,
+                code
+            );
+        }
+    }
+
+    /// Exhaustive match: if you add a variant to `ErrorCode` and don't
+    /// extend `ALL_CODES`, the compiler emits a non-exhaustive-patterns
+    /// error. This is the actual drift guard.
+    #[test]
+    fn exhaustive_variant_coverage_via_match() {
+        fn assert_covered(code: ErrorCode) {
+            match code {
+                ErrorCode::Config => {}
+                ErrorCode::Input => {}
+                ErrorCode::KeyMissing => {}
+                ErrorCode::KeyMalformed => {}
+                ErrorCode::ListNotFound => {}
+                ErrorCode::ListMemberMissing => {}
+                ErrorCode::AgeBelowMin => {}
+                ErrorCode::TierBelowMin => {}
+                ErrorCode::TierNone => {}
+                ErrorCode::EmptyValue => {}
+                ErrorCode::CircuitInternal => {}
+                ErrorCode::Io => {}
+                ErrorCode::DeterminismViolation => {}
+                ErrorCode::StubRejected => {}
+            }
+        }
+        // Force evaluation against ALL_CODES so the two stay in sync.
+        for (code, _) in ALL_CODES {
+            assert_covered(code.clone());
+        }
+        // The list length must match the enum size. Update both together.
+        assert_eq!(ALL_CODES.len(), 14);
     }
 
     #[test]

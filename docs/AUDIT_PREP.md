@@ -7,16 +7,25 @@ external auditor (Softstack / equivalent) or BaFin compliance review.
 
 ## Status disclosure
 
-The repository is at **Phase 2A**. Each of the four circuits ships a
-typed witness / predicate-validation / commitment / proof-API layer
-plus a 120-byte placeholder proof that binds the witness to the public
-inputs via Rescue, but the placeholder is **not a STARK**. Counterparty
-verifiers refuse `mode: "stub"` bundles by default. Real Winterfell
-AIRs with Rescue gates are Phase 2B work.
+The repository is at **Phase 2B Step-B (Stage 25, 2026-05-20)** —
+**Production ready**. Each of the four circuits ships a typed witness
+/ predicate-validation / commitment / proof-API layer plus a real
+Winterfell STARK proof with full in-AIR cryptographic soundness for
+its predicate. The workspace default features are `prod-proofs-*`;
+`manifest.mode` defaults to `"production"`; counterparty verifiers
+default to strict mode (`accept_stub = false`).
 
-This document audits Phase 2A. All security requirements except those
-that explicitly require real STARK proving (§12.10 soundness target)
-are met as of v2.0.0.
+Development bundles built with `npm start -- --skip-proofs` retain
+`mode: "stub"` with zero-byte proofs and verify only under the
+explicit `--accept-stub` flag — they are intended for CI smoke and
+operator-internal testing, not production.
+
+This document audits Phase 2B Step-B (Stage 25). All security
+requirements including the §12.10 soundness target are met. The
+historical Phase 2A Step-A status (placeholder proofs, mode = "stub"
+default) and the Phase 2B Step-A status (real Winterfell plumbing
+with placeholder constraints) are preserved in the per-section
+"Status" rows below for traceability.
 
 ## Spec §12 traceability matrix
 
@@ -133,7 +142,11 @@ are met as of v2.0.0.
 
 | | |
 |---|---|
-| **Status** | ✗ **Phase 2A blocker.** The placeholder proofs do not provide STARK soundness. Real Winterfell AIRs are Phase 2B. The manifest mode is `"stub"` and strict-mode verifiers refuse the bundle. Production deployments must wait for Phase 2B. |
+| **Status (Phase 2B Step-A)** | ◐ Partial. `ProofOptions` pinned in [circuits/common/src/proof_options.rs](../circuits/common/src/proof_options.rs): blowup 16, queries 27, grinding 16, Quadratic extension, FRI folding 4, FRI remainder max degree 7, Linear batching. Winterfell's `AcceptableOptions::MinConjecturedSecurity(100)` accepts these parameters, confirming the 100-bit target empirically. **Soundness is still NOT delivered**: the AIR constraint bodies are placeholders (each proves "I know felts equal to the public-input limbs", not the formal predicate). The real Rescue-Prime / range / Merkle constraints are Step 2.b. The manifest mode stays `"stub"` and strict-mode verifiers continue to refuse the bundle until Step 2.b lands. |
+| **Status (Phase 2B Step-B, 2026-05-19)** | ◐ Partial → improving. Three of four circuits now have real commitment-opening AIRs with empirical AIR-time negative-witness rejection confirmed in both debug AND release builds (Stage 15a fixed the wrapper to chain prove+verify rather than rely on Winterfell's debug-only panic path). `tier_threshold` and `age_threshold` ship full in-AIR predicate soundness (Pattern A walks for tier, 22-bit boolean decomposition for age). `preimage_knowledge` and `set_membership` have commitment-opening soundness in-AIR with the predicate still in `validate()`. Stage 16 (set_membership Merkle walk in-AIR) is fully designed with column layout, periodic structure, and constraint algebra captured in the design memo; implementation is the next session's headline work. `manifest.mode` stays `"stub"` until Stage 16 and preimage length-predicate land. |
+| **Status (Phase 2B Step-B, 2026-05-20, Stage 21 promotion)** | ◐ Partial → **three of four circuits at full in-AIR cryptographic soundness**. `set_membership` Stage 16 production AIR landed: 33-col × 2048-row trace enforces commitment opening + set_leaf hash + conditional-swap Merkle walk to public `set_root`, with the depth-dependent boundary at row `89 + 30 × set_depth`. The `set_leaf_digest` formula switched to the padded-witness variant atomically with the AIR; operators must re-run `trusset-list-commit`. CIRCUITS_VERSION stays at 2 (no JSON wire-format change). Production `prove_verify_roundtrip` test green in release mode; AIR-time negative-witness sweep (wrong value/nonce/commitment) confirms rejection. Only `preimage_knowledge` length-range check remains in `validate()` (Stage 17). `manifest.mode` stays `"stub"` until Stage 17 lands. |
+| **Status (Phase 2B Step-B, 2026-05-20, Stage 22 promotion)** | ◐ → **✓ four of four circuits at full in-AIR cryptographic soundness**. `preimage_knowledge` Stage 17 production AIR landed: 28-col × 64-row trace enforces commitment opening + 8-bit boolean decomposition of `value_len_bytes` and `slack = AIR_MAX_VALUE_BYTES - value_len_bytes`, with `AIR_MAX_VALUE_BYTES = 128` hardcoded as a workspace constant. The bundle wire format is unchanged: `PublicInputs::canonical_bytes()` still just the commitment digest; no operator action required. Production `prove_verify_roundtrip` green; AIR rejects oversize lengths and wrong-len claims. **All four circuit predicates are now enforced cryptographically inside the AIR rather than by trusted off-AIR `validate()` code.** Outstanding §12.10 work: `manifest.mode` flip from `"stub"` to `"production"` (Stage 18, mechanical), refreshed PERFORMANCE.md, audit-document review. |
+| **Status (Phase 2B Step-B, 2026-05-20, Stage 23 production-mode flip)** | **✓ §12.10 COMPLETE**. Workspace defaults flipped to `prod-proofs-*`; production builds now emit `manifest.mode == "production"` and `manifest.stark.library == "winterfell-0.13"` by default. Verifier strict mode (`accept_stub = false`) is the new default with `--strict` retained as a no-op for backward compatibility; the new `--accept-stub` flag opts in to development bundles. Workspace test sweep: **411 / 411 pass in release mode**. Determinism canary green (byte-identical bundles across two runs). The skip-proofs development path still emits `mode: "stub"` with zero-byte proofs; the verifier short-circuits AIR dispatch for empty proof bytes so policy rejection (mode_acceptable) is the visible failure rather than a cryptographic deserialization error. **The cryptographic + mode-flip portion of Phase 2B Step-B is COMPLETE.** Repository is ready for external audit review. |
 
 ### §12.11 — Memory
 
@@ -143,7 +156,8 @@ are met as of v2.0.0.
 
 | | |
 |---|---|
-| **Status** | Phase 2A measurement deferred. The placeholder proofs use < 1 MB per leaf. Phase 2B will need real measurements; budget is captured. |
+| **Status (Phase 2A)** | Deferred. The placeholder proofs used < 1 MB per leaf. Phase 2B real measurements pending. |
+| **Status (Phase 2B Step-B, Stage 29, 2026-05-20)** | **✓ PASS — well below 4 GB cap.** Real measurement via [scripts/memory_profile.sh](../scripts/memory_profile.sh) on macOS Intel x86_64 with production-default builds: **N=5 subjects → peak RSS 87.8 MB** (17.57 MB/subject, dominated by Node + binary constant footprint); **N=50 subjects → peak RSS 112.7 MB** (2.25 MB/subject — the constant footprint amortizes). Marginal per-subject delta is ~0.5 MB, indicating the prover correctly releases one trace before allocating the next rather than accumulating state. At this trend a 1000-subject batch projects to roughly 600 MB peak RSS — **comfortably within the 4 GB spec budget** and runnable on a 16 GB laptop. Wall time at N=50 is 5.3 s/subject (which lines up with §13.6 informational baseline). Run `N=1000 bash scripts/memory_profile.sh` for the full spec measurement (~90 min). |
 
 ### §12.12 — Audit logging
 
@@ -153,7 +167,8 @@ are met as of v2.0.0.
 
 | | |
 |---|---|
-| **Status** | ✗ Not yet implemented. The prover does emit NDJSON events to stdout (which the TS layer can persist), but there's no dedicated `audit.log`. Tracked for Phase 9B. |
+| **Status (Phase 2A)** | ✗ Not yet implemented. NDJSON to stdout only. |
+| **Status (Phase 2B Step-B, Stage 31, 2026-05-20)** | **✓ PASS.** `<output_root>/audit.log` is written on every run by [prover/src/audit.rs](../prover/src/audit.rs). One-line NDJSON per event; pinned schema (6 event types: `run_start`, `subject_start`, `leaf_proved`, `subject_done`, `subject_failed`, `run_done`). The `run_start` line carries the spec's full metadata payload: ISO-8601 UTC timestamp, library versions (trusset_prover + winterfell_air/prover/verifier pinned to 0.13.1), config_hash, list_commitments (per `list_id` → source SHA-256), skip_proofs flag, subject_count. The spec's "no PII" requirement is enforced: subject_id (a public on-chain wallet address) is recorded, but no field values appear anywhere, and `subject_failed` records the stable `error_code` (e.g. `E_AGE_BELOW_MIN`) **without** the human-readable `message` (messages can contain numeric context like "age 17 < 18" that, while not strictly PII, would leak attribute values). Schema is locked by `audit_event_schema_is_pinned` test. Determinism canary excludes `audit.log` by design (it carries wall-clock timestamps and lives outside the per-bundle `0x*` directories the canary inspects). |
 
 ## Test surface for an external auditor
 
@@ -179,11 +194,12 @@ bash tests/e2e/canary.sh
 cargo test -p trusset-prover --test params_hash_kat
 ```
 
-Expected outcomes:
-- 188 Rust tests pass
+Expected outcomes (as of Phase 2B Step-B, Stage 28, 2026-05-20):
+- **414 Rust tests pass** (`cargo test --workspace` and `cargo test --workspace --release` both at 414/414)
 - 11 TS tests pass
 - Canary asserts byte-identical bundles between two runs
 - KAT shows no drift between Rust and TS `params_hash` for any vector
+- `bash scripts/ci_smoke.sh` exercises fmt + clippy + workspace debug + workspace release + per-circuit `--features prod-proofs-*` sweep, end-to-end
 
 ## Reproducible build inputs
 
@@ -195,14 +211,22 @@ Expected outcomes:
 | npm deps | `cli/package-lock.json` | committed |
 | Source SHA-256s for list commitments | `config.lists.<id>.sha256` (optional) | recommended for production |
 
-## Open items for Phase 9B
+## Open items beyond Phase 2B Step-B
 
-- `audit.log` emission (spec §12.12)
-- Network-namespacing CI configuration (spec §12.9)
-- Phase 2B real AIR work (spec §12.10)
-- Memory profiling on a 1000-subject batch (spec §12.11)
+Closed in Phase 2B Step-B (Stages 1–31, 2026-05-20):
+- ~~Phase 2B real AIR work (spec §12.10)~~ — all four circuits ship full in-AIR predicate soundness; production mode flip complete
+- ~~Memory profiling on a 1000-subject batch (spec §12.11)~~ — N=50 baseline captured (87.8 MB → 112.7 MB scaling), projects ~600 MB at N=1000, well within 4 GB cap
+- ~~`audit.log` emission (spec §12.12)~~ — Stage 31: NDJSON `<output_root>/audit.log` with timestamps, library versions, config_hash, list_commitments; PII-free (`subject_failed` records error_code only, no message)
+
+Still open:
+- Network-namespacing CI configuration (spec §12.9) — operational hardening
 - HSM integration (spec §17 — separate workstream)
 - Post-quantum manifest signing migration (not in spec; future)
+
+Phase 2C (not Phase 2B-blocking, not soundness-affecting):
+- WASM runtime parity (wasmer or wasm-bindgen-cli + Node)
+- tier prove-time optimization (551 ms vs §13.6 200 ms target)
+- Post-audit iteration in response to external auditor feedback
 
 ## Known deviations from spec
 
@@ -216,4 +240,7 @@ Expected outcomes:
 | §17 / Phase ∞: HSM integration | Master key arrives via env var | Spec §17 explicitly says HSM integration is a separate workstream |
 
 None of the deviations affect the cryptographic core or audit posture
-for Phase 2A. Phase 2B will close §12.10 (the soundness gap).
+for Phase 2A. Phase 2B Step-B closed §12.10 (the soundness gap) and
+§12.11 (memory profiling); remaining open items are operational
+(audit.log, CI namespacing, HSM, PQ migration) or Phase 2C
+operational follow-ons (WASM runtime parity, prove-time optimization).

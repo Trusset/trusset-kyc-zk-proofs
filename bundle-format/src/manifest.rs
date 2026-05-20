@@ -23,9 +23,19 @@ pub const CREATED_AT_SENTINEL: &str = "1970-01-01T00:00:00Z";
 
 pub const MANIFEST_VERSION: &str = "2.0.0";
 
-/// Phase 2A marker. Phase 2B flips this to `"production"` for real STARK
-/// proofs. Verifiers refuse stub manifests by default (`verify_strict`).
+/// Phase 2A marker. Phase 2B flips this to `MODE_PRODUCTION` for real
+/// STARK proofs. Verifiers refuse stub manifests by default
+/// (`verify_strict`).
 pub const MODE_STUB: &str = "stub";
+
+/// Phase 2B production marker. Emitted by the prover when the workspace is
+/// built with the per-circuit `prod-proofs-*` features enabled AND the
+/// real AIR predicates for ALL four circuits are in place. Once flipped,
+/// strict verifiers accept bundles carrying this mode value; permissive
+/// verifiers continue to accept both modes for diagnostic / development
+/// flows. See [docs/STEP_2B_COMMITMENT_DESIGN.md](../../docs/STEP_2B_COMMITMENT_DESIGN.md)
+/// for the operator-visible flip checklist.
+pub const MODE_PRODUCTION: &str = "production";
 
 /// Stable version of the `secrets.enc` KDF chain. Folded into the encrypt
 /// info string in `prover/src/encrypt.rs` and serialized into the manifest
@@ -46,7 +56,13 @@ pub struct StarkBlock {
 impl Default for StarkBlock {
     fn default() -> Self {
         Self {
-            library: "winterfell-stub".to_string(),
+            // Stage 18 mode-flip: real Winterfell 0.13.x AIR is now
+            // wired through all four circuits' prod-proofs feature
+            // paths. The `library` string reflects that reality. With
+            // `--skip-proofs` the bundle still carries this string
+            // (the stub flag affects the `mode` field, not the
+            // library declaration).
+            library: "winterfell-0.13".to_string(),
             library_version: "0.13".to_string(),
             field: "goldilocks".to_string(),
             hash: "rescue-prime".to_string(),
@@ -197,5 +213,17 @@ mod tests {
         let bytes = canonical_disk_bytes(&m).unwrap();
         let parsed: Manifest = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(m, parsed);
+    }
+
+    /// Wire-format constants for `manifest.mode`. These strings are
+    /// observed by counterparty verifiers across the workspace boundary
+    /// and across language boundaries (the TS CLI also pattern-matches
+    /// on these literals via the verifier binary's JSON output). They
+    /// MUST NOT drift without a coordinated update to all consumers.
+    #[test]
+    fn mode_constants_are_stable_wire_strings() {
+        assert_eq!(MODE_STUB, "stub");
+        assert_eq!(MODE_PRODUCTION, "production");
+        assert_ne!(MODE_STUB, MODE_PRODUCTION);
     }
 }

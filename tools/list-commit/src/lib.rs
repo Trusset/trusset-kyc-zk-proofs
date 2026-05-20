@@ -65,20 +65,12 @@ impl std::fmt::Display for CommitError {
 
 impl std::error::Error for CommitError {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CommitOptions {
     /// Allow duplicate entries in the source (silently dedupe). Default false:
     /// duplicates are an error so an operator can't accidentally include the
     /// same country code twice.
     pub allow_duplicates: bool,
-}
-
-impl Default for CommitOptions {
-    fn default() -> Self {
-        Self {
-            allow_duplicates: false,
-        }
-    }
 }
 
 /// Parse a source file and produce a `ListCommitmentFile`. The source bytes
@@ -191,8 +183,12 @@ mod tests {
     #[test]
     fn parses_simple_list_with_comments() {
         let src = "# ISO 3166-1 alpha-3 allowlist\nDEU\nFRA\nUSA\nGBR\n";
-        let r = commit_list("country_allowlist", src.as_bytes(), &CommitOptions::default())
-            .unwrap();
+        let r = commit_list(
+            "country_allowlist",
+            src.as_bytes(),
+            &CommitOptions::default(),
+        )
+        .unwrap();
         assert_eq!(r.list_id, "country_allowlist");
         assert_eq!(r.version, SCHEMA_VERSION);
         assert_eq!(r.values, vec!["DEU", "FRA", "USA", "GBR"]);
@@ -206,10 +202,7 @@ mod tests {
     fn rejects_duplicates_by_default() {
         let src = "DEU\nFRA\nDEU\n";
         let err = commit_list("x", src.as_bytes(), &CommitOptions::default()).unwrap_err();
-        assert!(matches!(
-            err,
-            CommitError::DuplicateAtLine { line: 3, .. }
-        ));
+        assert!(matches!(err, CommitError::DuplicateAtLine { line: 3, .. }));
     }
 
     #[test]

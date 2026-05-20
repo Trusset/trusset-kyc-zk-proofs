@@ -104,14 +104,10 @@ pub fn decrypt_secrets(
     ciphertext_with_nonce: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>> {
     if ciphertext_with_nonce.len() < NONCE_LEN {
-        return Err(ProverError::new(
-            ErrorCode::Input,
-            "secrets.enc too short",
-        ));
+        return Err(ProverError::new(ErrorCode::Input, "secrets.enc too short"));
     }
     let (file_nonce, ct) = ciphertext_with_nonce.split_at(NONCE_LEN);
-    let (key, derived_nonce) =
-        derive_box_material(master_key, subject_id, epoch_days, config_hash);
+    let (key, derived_nonce) = derive_box_material(master_key, subject_id, epoch_days, config_hash);
     if file_nonce != derived_nonce {
         return Err(ProverError::new(
             ErrorCode::Input,

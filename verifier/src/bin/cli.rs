@@ -4,25 +4,33 @@
 //! trusset-verifier-cli \
 //!   --bundle output/0xAbCd... \
 //!   --public-key <64-hex> \
-//!   [--strict]   # reject mode:"stub"
-//!   [--json]     # machine-readable output
+//!   [--accept-stub]   # accept manifest.mode == "stub" (development bundles)
+//!   [--strict]        # no-op (strict is the default since Stage 18)
+//!   [--json]          # machine-readable output
 //! ```
 //!
 //! Used by the TypeScript CLI's `npm run verify` command via child_process.
+//!
+//! Stage 18 (2026-05-20): strict mode (`accept_stub = false`) is now the
+//! default. The `--strict` flag is kept as a no-op for backward
+//! compatibility with existing operator scripts; `--accept-stub`
+//! explicitly opts in to accepting `mode: "stub"` bundles for
+//! development workflows.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use trusset_verifier::{verify_bundle, VerifyOptions};
 
 const USAGE: &str = "\
-Usage: trusset-verifier-cli --bundle <DIR> --public-key <HEX> [--strict] [--json]
+Usage: trusset-verifier-cli --bundle <DIR> --public-key <HEX> [--accept-stub] [--strict] [--json]
 
 Required:
   --bundle <DIR>           Path to a bundle directory (`output/<wallet>`)
   --public-key <HEX>       Operator's 32-byte ed25519 public key, hex
 
 Optional:
-  --strict                 Reject bundles with mode != \"production\"
+  --accept-stub            Accept bundles with mode == \"stub\" (development)
+  --strict                 No-op (strict mode is the default since Stage 18)
   --json                   Emit machine-readable JSON report
   --help, -h               Show this help
 
@@ -36,7 +44,7 @@ Exit codes:
 struct Args {
     bundle: PathBuf,
     public_key: [u8; 32],
-    strict: bool,
+    accept_stub: bool,
     json: bool,
 }
 
@@ -44,7 +52,7 @@ fn parse_args() -> Result<Args, String> {
     let mut iter = std::env::args().skip(1);
     let mut bundle: Option<PathBuf> = None;
     let mut public_key_hex: Option<String> = None;
-    let mut strict = false;
+    let mut accept_stub = false;
     let mut json = false;
 
     while let Some(arg) = iter.next() {
@@ -55,14 +63,21 @@ fn parse_args() -> Result<Args, String> {
             }
             "--bundle" => {
                 bundle = Some(PathBuf::from(
-                    iter.next().ok_or_else(|| "--bundle requires a path".to_string())?,
+                    iter.next()
+                        .ok_or_else(|| "--bundle requires a path".to_string())?,
                 ));
             }
             "--public-key" => {
-                public_key_hex =
-                    Some(iter.next().ok_or_else(|| "--public-key requires a value".to_string())?);
+                public_key_hex = Some(
+                    iter.next()
+                        .ok_or_else(|| "--public-key requires a value".to_string())?,
+                );
             }
-            "--strict" => strict = true,
+            "--accept-stub" => accept_stub = true,
+            // `--strict` is the post-Stage-18 default; the flag is kept
+            // as a no-op so older operator scripts that explicitly pass
+            // it continue to work.
+            "--strict" => {}
             "--json" => json = true,
             other => return Err(format!("unknown argument: {}", other)),
         }
@@ -74,7 +89,7 @@ fn parse_args() -> Result<Args, String> {
     Ok(Args {
         bundle,
         public_key: pk_bytes,
-        strict,
+        accept_stub,
         json,
     })
 }
@@ -82,7 +97,10 @@ fn parse_args() -> Result<Args, String> {
 fn decode_hex32(s: &str) -> Result<[u8; 32], String> {
     let stripped = s.trim().trim_start_matches("0x");
     if stripped.len() != 64 {
-        return Err(format!("public key must be 64 hex chars, got {}", stripped.len()));
+        return Err(format!(
+            "public key must be 64 hex chars, got {}",
+            stripped.len()
+        ));
     }
     let mut out = [0u8; 32];
     for i in 0..32 {
@@ -104,7 +122,7 @@ fn main() -> ExitCode {
 
     let opts = VerifyOptions {
         expected_public_key: args.public_key,
-        accept_stub: !args.strict,
+        accept_stub: args.accept_stub,
     };
 
     let report = match verify_bundle(&args.bundle, &opts) {
@@ -129,17 +147,35 @@ fn main() -> ExitCode {
         println!("kycHash:   {}", report.kyc_hash);
         println!("Leaves:    {}", report.leaf_count);
         println!();
-        println!("  layout_ok:               {}", check_mark(report.layout_ok));
-        println!("  mode_acceptable:         {}", check_mark(report.mode_acceptable));
-        println!("  kyc_hash_file_matches:   {}", check_mark(report.kyc_hash_file_matches));
-        println!("  signature_valid:         {}", check_mark(report.signature_valid));
-        println!("  merkle_root_valid:       {}", check_mark(report.merkle_root_valid));
+        println!(
+            "  layout_ok:               {}",
+            check_mark(report.layout_ok)
+        );
+        println!(
+            "  mode_acceptable:         {}",
+            check_mark(report.mode_acceptable)
+        );
+        println!(
+            "  kyc_hash_file_matches:   {}",
+            check_mark(report.kyc_hash_file_matches)
+        );
+        println!(
+            "  signature_valid:         {}",
+            check_mark(report.signature_valid)
+        );
+        println!(
+            "  merkle_root_valid:       {}",
+            check_mark(report.merkle_root_valid)
+        );
         println!();
         println!("Per-leaf:");
         for leaf in &report.leaves {
             let mark = check_mark(leaf.pass);
             match &leaf.reason {
-                Some(r) => println!("  {} {:<22} {:<22}  ({})", mark, leaf.field, leaf.circuit, r),
+                Some(r) => println!(
+                    "  {} {:<22} {:<22}  ({})",
+                    mark, leaf.field, leaf.circuit, r
+                ),
                 None => println!("  {} {:<22} {:<22}", mark, leaf.field, leaf.circuit),
             }
         }

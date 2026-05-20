@@ -9,8 +9,10 @@
 //! Exit codes: 0 ok, 2 partial (≥1 subject failed), 1 batch-aborting
 //! (env / config / parse error).
 
+use std::collections::BTreeMap;
 use std::io::Read;
 use trusset_prover::{
+    audit::AuditLog,
     bundle::build_subject_bundle,
     errors::{ErrorCode, ProverError, Result},
     io::{Event, EventStream},
@@ -61,6 +63,29 @@ fn run() -> i32 {
 
     let now_iso = current_iso_timestamp();
 
+    // Open the spec §12.12 audit log under the configured output dir.
+    // Soft-fails (writer = None) if the directory can't be created or
+    // the file can't be opened — audit logging must never break the
+    // prover's main flow.
+    let mut audit = AuditLog::open(std::path::Path::new(&job.output_root));
+
+    // Collect list commitment source hashes for the audit-log header.
+    // We record the source SHA-256 (already authenticated in
+    // manifest.lists) rather than recomputing the Rescue Merkle root
+    // — both bind the list, and source SHA-256 is already present.
+    let list_hashes: BTreeMap<String, String> = job
+        .list_commitments
+        .iter()
+        .map(|(k, v)| (k.clone(), v.source_sha256.clone()))
+        .collect();
+    audit.emit_run_start(
+        &now_iso,
+        &job.config_hash,
+        &list_hashes,
+        job.skip_proofs,
+        job.subjects.len(),
+    );
+
     let _ = events.emit(&Event::Start {
         subjects: job.subjects.len(),
     });
@@ -69,9 +94,11 @@ fn run() -> i32 {
     let mut failed = 0usize;
 
     for subject in &job.subjects {
+        let event_ts = current_iso_timestamp();
         let _ = events.emit(&Event::SubjectStart {
             subject_id: &subject.subject_id,
         });
+        audit.emit_subject_start(&event_ts, &subject.subject_id);
         match build_subject_bundle(
             &job,
             subject,
@@ -82,19 +109,25 @@ fn run() -> i32 {
         ) {
             Ok(report) => {
                 ok += 1;
+                let done_ts = current_iso_timestamp();
                 let _ = events.emit(&Event::SubjectDone {
                     subject_id: &subject.subject_id,
                     bundle_path: &report.bundle_path.to_string_lossy(),
                 });
+                audit.emit_subject_done(&done_ts, &subject.subject_id);
             }
             Err(e) => {
                 failed += 1;
+                let fail_ts = current_iso_timestamp();
                 let _ = events.fail(&subject.subject_id, e.code.clone(), &e.message);
+                audit.emit_subject_failed(&fail_ts, &subject.subject_id, &e.code);
             }
         }
     }
 
+    let end_ts = current_iso_timestamp();
     let _ = events.emit(&Event::Done { ok, failed });
+    audit.emit_run_done(&end_ts, ok, failed);
 
     if failed == 0 {
         0
@@ -147,7 +180,7 @@ fn current_iso_timestamp() -> String {
         .unwrap_or_default();
     let secs = now.as_secs() as i64;
     // Days since 1970-01-01.
-    let days = (secs / 86_400) as i64;
+    let days = secs / 86_400;
     let seconds_today = (secs % 86_400) as u64;
     let h = seconds_today / 3600;
     let m = (seconds_today % 3600) / 60;

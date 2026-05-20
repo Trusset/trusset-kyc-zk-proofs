@@ -10,8 +10,8 @@ use crate::dispatch::ProvedLeaf;
 use crate::job::{JobSubject, ListCommitment};
 use std::collections::BTreeMap;
 use trusset_bundle_format::manifest::{
-    LeafEntry, ListEntry, Manifest, StarkBlock, CREATED_AT_SENTINEL, MANIFEST_VERSION, MODE_STUB,
-    SECRETS_KDF_VERSION,
+    LeafEntry, ListEntry, Manifest, StarkBlock, CREATED_AT_SENTINEL, MANIFEST_VERSION,
+    MODE_PRODUCTION, MODE_STUB, SECRETS_KDF_VERSION,
 };
 use trusset_circuits_common::{digest_to_hex, CIRCUITS_VERSION};
 
@@ -30,6 +30,7 @@ pub fn build_manifest(
     proved_leaves: &[ProvedLeaf],
     list_commitments_used: &BTreeMap<String, ListCommitment>,
     list_roots: &BTreeMap<String, String>,
+    skip_proofs: bool,
 ) -> Manifest {
     let mut leaves = Vec::with_capacity(proved_leaves.len());
     for &orig_idx in sorted_indices {
@@ -66,9 +67,20 @@ pub fn build_manifest(
         );
     }
 
+    // Stage 18 mode-flip: `MODE_STUB` is emitted only when the
+    // operator explicitly passed `--skip-proofs` (zero-byte proofs,
+    // development iteration). Otherwise the manifest carries
+    // `MODE_PRODUCTION` and counterparty verifiers in strict mode
+    // accept the bundle.
+    let mode = if skip_proofs {
+        MODE_STUB.to_string()
+    } else {
+        MODE_PRODUCTION.to_string()
+    };
+
     Manifest {
         version: MANIFEST_VERSION.to_string(),
-        mode: MODE_STUB.to_string(),
+        mode,
         wallet_address: subject.subject_id.clone(),
         kyc_hash: kyc_hash_hex.to_string(),
         epoch_days,

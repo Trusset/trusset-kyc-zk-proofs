@@ -173,3 +173,96 @@ operator-private data.
 | Self-audit | `npm run decrypt` (re-keccak vs `kycHash` column) | `npm run decrypt` (decrypt secrets, re-prove, compare) |
 | Counterparty verify | — | `npm run verify -- <wallet> --public-key <hex>` |
 | Iteration speed | — | `npm start -- --skip-proofs` |
+
+## 13. v2 commitment-formula bump (CIRCUITS_VERSION 1 → 2)
+
+Phase 2B Step-B replaces the byte-level v1 commitment with a felt-level
+Rescue commitment over a domain-separated input vector (`COMMITMENT_TAG ‖
+circuit_id ‖ length ‖ padded_witness ‖ nonce`). Every commitment value
+for every leaf in every circuit changes — bundles produced by v1 cannot
+be verified by v2 binaries and vice versa.
+
+Operator actions on upgrade:
+
+- **Re-run `trusset-list-commit`** for every list-commitment file (e.g.
+  `country_allowlist.json`, `document_types.json`). The
+  `set_leaf_digest` formula incorporated a `0x01` collision-prevention
+  suffix in Stage 9, then a fixed-felt-count padding change in Stage 12.
+  Any list-commit JSON produced before Stage 12 is byte-incompatible
+  with v2 prover/verifier binaries.
+- **Discard all v2-pre-Stage-12 bundles**. The CIRCUITS_VERSION bump
+  invalidates them at the manifest level.
+- **Stage 16 (SHIPPED 2026-05-20)** changed `set_leaf_digest` to use
+  the padded witness (12 felts) so the off-AIR and in-AIR set_leaf
+  values agree. The `set_membership` AIR now enforces the full
+  Merkle-walk predicate in-AIR (commitment opening + set_leaf hash +
+  conditional-swap Merkle walk to set_root). Operator action: re-run
+  `trusset-list-commit` for every list-commitment file. Existing v2
+  bundles with `set_membership` proofs are invalidated at the leaf
+  level (different `set_leaf` → different inclusion proof → different
+  `proof_digest` → different `leaf_hash`) and must be re-proven.
+  CIRCUITS_VERSION stays at 2 (no JSON wire-format change; only the
+  internal `set_leaf` hash value shifts).
+- **Stage 17 (SHIPPED 2026-05-20)** added in-AIR length-range
+  enforcement to `preimage_knowledge`. The AIR now enforces
+  `value_len_bytes + slack = AIR_MAX_VALUE_BYTES (= 128)` via 8-bit
+  boolean decomposition. **No operator action required**: bundle wire
+  format is unchanged (PublicInputs canonical bytes still just the
+  commitment digest), existing v2 bundles validate as before, and
+  CIRCUITS_VERSION stays at 2. The off-AIR `Params::max_value_bytes`
+  may still be configured per-operator for the `validate()` check,
+  but the AIR enforces `≤ 128`. To change the AIR's max length,
+  modify `AIR_MAX_VALUE_BYTES` in
+  [circuits/preimage_knowledge/src/air.rs](../circuits/preimage_knowledge/src/air.rs)
+  and re-prove affected bundles.
+
+## 14. Production mode flip (Stage 23, SHIPPED 2026-05-20)
+
+The workspace default flipped from stub-proofs to real Winterfell
+STARK proofs. Operator-visible changes:
+
+- **`manifest.mode`**: default value flipped from `"stub"` to
+  `"production"`. With `--skip-proofs` the operator can still
+  produce stub bundles (mode stays `"stub"`).
+- **`manifest.stark.library`**: flipped from `"winterfell-stub"` to
+  `"winterfell-0.13"`.
+- **Verifier default**: strict mode (`accept_stub = false`) is now
+  the default. The `--strict` flag is kept as a no-op; the new
+  `--accept-stub` flag opts in to accepting stub bundles.
+
+**Operator actions**:
+
+1. Existing v2 bundles produced before Stage 23 carry
+   `mode: "stub"` and will be rejected by post-Stage-23 verifiers
+   in strict mode (the default). Either re-prove them
+   (`npm start` regenerates with `mode: "production"`) or run the
+   verifier with `--accept-stub` for backward compatibility.
+2. The TS CLI `verify <wallet>` command no longer accepts stub
+   bundles by default. Pass `--accept-stub` to retain the old
+   permissive behavior, e.g. for development bundles produced with
+   `--skip-proofs`.
+3. The Rust verifier CLI `trusset-verifier-cli` no longer accepts
+   stub bundles by default. The `--strict` flag remains a no-op for
+   backward compatibility with existing operator scripts.
+4. No new env vars, no config-schema changes, no
+   `CIRCUITS_VERSION` bump. Pure value-level flip on the existing
+   `mode` and `library` fields.
+5. Prove time per leaf increased from ~120 bytes (stub) to ~16-30 KB
+   of real STARK bytes per leaf. Per-leaf prove time scales with the
+   circuit (tier ~540 ms, age ~200 ms, preimage ~250 ms, set ~1 s
+   depth-2; rough release-mode numbers). The canary's two-run
+   determinism guarantee is preserved.
+
+Equivalent prove commands across versions:
+
+| Phase 2A (stub) | Phase 2B post-Stage-23 (production) |
+|---|---|
+| `npm start` (mode=stub) | `npm start` (mode=production) |
+| — | `npm start -- --skip-proofs` (mode=stub for development) |
+| `npm run verify -- <wallet>` (accepts stub) | `npm run verify -- <wallet>` (rejects stub by default) |
+| `npm run verify -- <wallet> --strict` (rejects stub) | `npm run verify -- <wallet>` (same, default) |
+| — | `npm run verify -- <wallet> --accept-stub` (development) |
+
+Stub-mode bundles (`manifest.mode == "stub"`) produced during Phase 2B
+Step-A or Step-B development are not signed for production and can be
+discarded freely.

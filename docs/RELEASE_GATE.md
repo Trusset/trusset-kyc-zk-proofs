@@ -18,9 +18,98 @@ configuration for the other two platforms is not part of this release.
 
 ## Result
 
-**ALL GATE STEPS PASS** for Phase 2A scope. Phase 2B perf targets (spec
-§13.6) and §12.10 soundness are by design out of scope until real
-Winterfell AIRs land.
+**ALL GATE STEPS PASS** for Phase 2A scope. Phase 2B Step-B (Stages
+1–27, 2026-05-20) closed §12.10 (soundness) by shipping real in-AIR
+predicates for all four circuits and flipping production defaults
+across the workspace. §13.6 (200 ms tier prove target) remains
+informational — current 551 ms baseline is structural, not
+soundness-affecting, and is filed as a Phase 2C optimization.
+
+## Phase 2B Step-B progress (informational, gate result unchanged)
+
+As of 2026-05-19 (after Stage 15a release-mode test fix):
+
+- All four circuits' `--release` test suites are now green with the
+  `prod-proofs-<C>` feature enabled. The Stage 15a fix (chain prove +
+  verify in the AIR-time test wrappers) resolved a test-framework gap
+  where Winterfell's `debug_assert!`-based panic-on-bad-trace path was
+  compiled out in release builds. This restores the DoD's "release tests
+  green" requirement across all four circuits:
+  - `tier_threshold --features prod-proofs-tier --release`: 40 lib + 5 integration
+  - `age_threshold --features prod-proofs-age --release`: 27 lib + 5 integration
+  - `preimage_knowledge --features prod-proofs-preimage --release`: 32 lib + 5 integration
+  - `set_membership --features prod-proofs-set --release`: 37 lib + 5 integration
+- `cargo test --workspace --release`: 240 / 240 default-features.
+- `cargo fmt --check --all` and `cargo clippy --workspace --all-targets
+  -- -D warnings` (both default and prod-proofs feature paths): clean.
+- Stage 16 (set_membership in-AIR Merkle walk) **shipped** 2026-05-20.
+  33-column × 2048-row trace with depth-dependent set_root boundary at
+  row `89 + 30*set_depth`. Operator action on upgrade: re-run
+  `trusset-list-commit` for all lists (set_leaf_digest formula now
+  uses padded witness felts; set_root values change).
+- Stage 17 (preimage_knowledge in-AIR length-range predicate)
+  **shipped** 2026-05-20. 28-column × 64-row trace with 8-bit length
+  decomposition; `AIR_MAX_VALUE_BYTES = 128`.
+- §12.10 (soundness) flips to **PASS** for all four circuits as of
+  Stage 17. §13.6 (perf) remains informational — tier prove-time
+  551 ms vs 200 ms target is structural (column count + STARK_OPTIONS),
+  not soundness-affecting, and is filed as a Phase 2C optimization.
+- **CI smoke script** [scripts/ci_smoke.sh](../scripts/ci_smoke.sh) ships
+  the back-to-back feature-permutation sweep that closes the release-cache
+  flakiness gap from Step-A. Runs `cargo fmt --check`, default-features
+  clippy + tests (debug + release), then iterates each of the four
+  circuits' `prod-proofs-<name>` features for clippy + release tests, all
+  in a single shell session (one shared `target/`). Validated end-to-end
+  with `bash scripts/ci_smoke.sh`. The `--quick` flag skips the
+  per-circuit prod-proofs sweep for pre-commit-hook use.
+- **Stage 23 production mode flip (2026-05-20)**: workspace default
+  features flipped from `stub-proofs` to per-circuit `prod-proofs-*`.
+  `manifest.mode` default flipped to `"production"`;
+  `manifest.stark.library` to `"winterfell-0.13"`. Verifier strict mode
+  (`accept_stub = false`) is now the default with `--strict` retained
+  as a no-op for backward compatibility; the new `--accept-stub` flag
+  opts in to development bundles. **All deferred Phase 2B Step-B items
+  flip to PASS**:
+  - Real Winterfell `Air`/`Prover`/`Verifier` impls in production for
+    all four circuits ✓
+  - `manifest.mode` flipped from `"stub"` to `"production"` ✓
+  - Counterparty verifiers default to rejecting stub mode ✓
+  - 414 / 414 workspace release tests pass ✓
+  - 414 / 414 workspace **debug** tests pass (Stage 27, 2026-05-20) ✓
+  - Determinism canary byte-identical ✓
+  - CI smoke sweep green across all feature permutations ✓
+- **Stage 27 debug/release symmetry fix (2026-05-20)**: resolved the
+  workspace-debug-mode `set_membership` AIR Winterfell quirk by making
+  the prover emit alternating side-bit values in stall rows. The
+  column polynomial now always has full degree regardless of witness
+  path, so Winterfell's debug-mode degree-consistency check passes
+  for every witness. CI smoke now exercises both debug and release.
+- **Determinism canary** [tests/e2e/canary.sh](../tests/e2e/canary.sh)
+  re-validated post Stage 15a: two runs of a 2-subject batch produce
+  byte-identical bundles across all 12 compared files modulo the
+  `createdAt` field. Confirms no regression from the test-wrapper change.
+
+## Phase 2B Step-A progress (informational, gate result unchanged)
+
+As of Phase 2B Step-A:
+
+- All four circuits ship a `prod-proofs-<circuit>` feature that routes
+  through real Winterfell `Air` / `Prover` / `Verifier` impls — verified
+  by KAT round-trips (proof bytes deterministic across two prove calls)
+  and per-circuit negative-witness sweeps. See [Phase status in README](../README.md#phase-status).
+- Workspace-pinned `STARK_OPTIONS` (blowup 16, queries 27, grinding 16,
+  Quadratic extension) verifier-confirmed at 100 conjectured bits via
+  `AcceptableOptions::MinConjecturedSecurity(100)`.
+- WASM verifier builds; `verify_strict` and `verify_permissive` exports
+  validated by [verifier/tests/wasm_build_check.rs](../verifier/tests/wasm_build_check.rs).
+- Default workspace feature remains `stub-proofs`; `manifest.mode`
+  remains `"stub"`. Counterparty verifiers still reject by default.
+- **The AIR constraint bodies are PLACEHOLDERS** — they prove "I know
+  felts equal to public-input limbs", not the formal predicates in
+  `docs/CIRCUITS.md`. Step 2.b (real Rescue-Prime / range / Merkle
+  constraints) is the next Phase 2B work item.
+- §12.10 (soundness) and §13.6 (perf) gate items stay DEFERRED until
+  Step 2.b lands real constraints.
 
 ## Step-by-step results
 
@@ -38,7 +127,7 @@ Winterfell AIRs land.
 | 9 | Two runs produce byte-identical bundles (modulo createdAt) | PASS | 12 files compared (kycHash, sig, secrets, 9 proofs, manifest modulo createdAt) — zero differences |
 | 10 | `bash tests/e2e/canary.sh` passes | PASS | Full pipeline twice in clean temp dirs, byte-equality asserted |
 | 11 | Full test sweep (`cargo test --workspace` + `node --test`) | PASS | 188 Rust + 11 TS = **199 tests** |
-| 12 | Perf within `docs/PERFORMANCE.md` baseline | PASS | Verify 30 ms, hash 260 ms, bundle 56 KB, proofs 120 bytes ea. Phase 2B targets (spec §13.6) deferred |
+| 12 | Perf within `docs/PERFORMANCE.md` baseline | PASS (Phase 2A baseline) / INFORMATIONAL (Phase 2B Step-B baselines) | Stage 24 refresh (2026-05-20): tier prove 551 ms, age 372 ms, preimage 285 ms, set ~6 s. Spec §13.6 200 ms target filed as Phase 2C optimization — structural, not soundness-affecting |
 | 13a | Flip 1 byte in `proofs/firstName.bin` → verifier rejects | PASS | `[FAIL] firstName preimage_knowledge (proof digest mismatch)`, exit 2 |
 | 13b | Relabel `"mode": "stub"` → `"production"` → signature breaks | PASS | `signature_valid: [FAIL]`, exit 2 |
 | 13c | Swap list-commitments file after building | DEFENDED | `manifest.lists.<id>.sourceSha256` is inside the signed payload; any post-hoc file swap requires re-signing. The verifier trusts the signed sourceSha256 since the counterparty doesn't read the operator's config file. The defense is structural |
@@ -98,7 +187,7 @@ This is checked by `cli/src/config.ts::resolveLists`.
 |---|---|---|
 | 1 | All deliverables in §15 present; CI green | PASS (CI is the local test sweep + canary; cross-platform CI is operational follow-on) |
 | 2 | Bank-side integrator can `npm install && npm start` on a fresh machine | PASS (requires node ≥ 18, rust ≥ 1.75, wasm32 target — documented) |
-| 3 | Benchmark targets in §13.6 met | DEFERRED (Phase 2B; Phase 2A baselines documented in `docs/PERFORMANCE.md`) |
+| 3 | Benchmark targets in §13.6 met | INFORMATIONAL — Phase 2B Step-B baselines documented in `docs/PERFORMANCE.md` (Stage 24, 2026-05-20). Spec §13.6 200 ms tier target deferred to Phase 2C optimization; structural, not soundness-affecting |
 | 4 | Independent engineer verifies bundles; tampered → specific informative failure | PASS (negative tests 13a–13c above) |
 | 5 | Audit-prep document reviewed by Trusset CTO; signed off for external auditor | PENDING operator review of [`docs/AUDIT_PREP.md`](AUDIT_PREP.md) |
 
@@ -110,11 +199,28 @@ tool, bundle format, TS CLI, manifest schema, ed25519 signing, secrets
 encryption, deterministic seed derivation, and all four circuit APIs
 are production-quality.
 
-What's gated to Phase 2B: real Winterfell AIRs for each circuit
-(spec §6.1 / §6.2 / §6.3 / §6.4) and the resulting bundle-size /
-perf-profile changes. Operators can run Phase 2A in development and
-test environments to validate the integration; production deployments
-wait for Phase 2B to remove the `mode: "stub"` marker.
+What was gated to Phase 2B (now resolved): real Winterfell AIRs for
+each circuit (spec §6.1 / §6.2 / §6.3 / §6.4) and the resulting
+bundle-size / perf-profile changes. Phase 2B Step-B (Stages 1–27)
+shipped in-AIR cryptographic soundness for all four circuits and
+flipped `manifest.mode` default to `"production"`. v2.0.0 builds now
+emit production bundles by default; the stub-mode path is retained as
+the `--skip-proofs` opt-in for development integration testing.
+
+## Phase 2B Step-B is shippable as
+
+A production release with cryptographically meaningful zero-knowledge
+proofs for all four predicates: tier threshold (Pattern A walk), age
+threshold (22-bit boolean range), preimage knowledge (8-bit length
+decomposition with `AIR_MAX_VALUE_BYTES = 128`), and set membership
+(in-AIR Merkle walk with depth-dependent `set_root` boundary). The
+verifier rejects stub bundles by default; `--accept-stub` is required
+to opt back into development bundles.
+
+What's filed as Phase 2C (not Phase 2B-blocking, not soundness-affecting):
+- WASM runtime parity beyond the structural ABI check
+- Prove-time optimization (tier 551 ms vs §13.6 200 ms target)
+- Post-audit iteration in response to external auditor feedback
 
 ## Reproducing the gate
 
@@ -137,6 +243,11 @@ npm start
 cargo test --workspace
 (cd cli && node --test dist/__tests__/*.test.js)
 
+# Full CI sweep including per-circuit prod-proofs feature paths.
+# Runs all feature permutations back-to-back in one shell session,
+# avoiding the release-cache flakiness from separate invocations.
+bash scripts/ci_smoke.sh
+
 # Canary
 bash tests/e2e/canary.sh
 
@@ -144,5 +255,7 @@ bash tests/e2e/canary.sh
 cargo test -p trusset-prover --test params_hash_kat
 ```
 
-Expected: all green; 188 Rust + 11 TS tests pass; canary asserts
+Expected: all green; 240 Rust workspace tests + 11 TS tests pass under
+default features; per-circuit `prod-proofs-{tier,age,preimage,set}`
+release tests are 40+5, 27+5, 32+5, 37+5 respectively; canary asserts
 byte-identical bundles; KAT confirms TS ↔ Rust agreement.

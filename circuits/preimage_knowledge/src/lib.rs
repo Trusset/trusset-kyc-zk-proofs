@@ -8,18 +8,33 @@
 //! `documentNumber`, ...). Its ZK value is non-malleability and a uniform
 //! "every leaf is a STARK" manifest property (spec §6.4 note).
 //!
-//! # Status: Phase 2A
+//! # Status
 //!
-//! Phase 2A delivers the typed witness / public-input / params layer and a
-//! deterministic `StubProof` that exercises downstream infrastructure
-//! (prover binary, manifest builder, verifier façade). The actual Winterfell
-//! AIR with Rescue gates is Phase 2B work — until then, manifests carry
-//! `mode: "stub"` and production verifiers reject these proofs.
+//! - **Stub path** (`--features stub-proofs`, Phase 2A default): typed
+//!   witness / public-input / params layer + deterministic `StubProof`.
+//!   Manifests carry `mode: "stub"` and production verifiers reject the
+//!   bundle.
+//! - **Prod-proofs path** (`--features prod-proofs-preimage`, Phase 2B):
+//!   real Winterfell AIR + prover + verifier via `air`, `prover`,
+//!   `verifier` modules. Current implementation uses a PLACEHOLDER AIR
+//!   (see `air.rs` SCOPE notes) that exercises the full Winterfell
+//!   roundtrip without enforcing the Rescue-Prime commitment opening yet.
+//!   Step 2.b in the Phase 2B rollout replaces the placeholder
+//!   constraints with the real relation per `docs/CIRCUITS.md`.
+
+#[cfg(feature = "prod-proofs-preimage")]
+pub mod air;
+#[cfg(feature = "prod-proofs-preimage")]
+pub mod prover;
+#[cfg(feature = "prod-proofs-preimage")]
+pub mod verifier;
 
 use sha2::{Digest as _, Sha256};
+#[cfg(not(feature = "prod-proofs-preimage"))]
+use trusset_circuits_common::StubProof;
 use trusset_circuits_common::{
-    compute_commitment, hash_bytes_with_tag, CircuitId, Digest, StubProof, StubProofError,
-    NONCE_LEN, PUBLIC_DIGEST_TAG, DIGEST_LEN_BYTES,
+    bytes_to_field, compute_commitment, hash_bytes_with_tag, CircuitId, Digest, Felt,
+    StubProofError, DIGEST_LEN_BYTES, NONCE_LEN, PUBLIC_DIGEST_TAG,
 };
 use zeroize::Zeroize;
 
@@ -99,11 +114,16 @@ pub enum ValidateError {
     /// from the witness. Indicates a bug or a tampered witness/public-input
     /// pair.
     CommitmentMismatch,
+    /// Winterfell prover failed (prod-proofs-preimage path only).
+    WinterfellProverError(String),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum VerifyError {
     StubProofMalformed(StubProofError),
+    /// Winterfell verifier rejected the proof (prod-proofs-preimage path only).
+    #[cfg(feature = "prod-proofs-preimage")]
+    WinterfellVerifyError(verifier::AirVerifyError),
 }
 
 impl From<StubProofError> for VerifyError {
@@ -125,52 +145,142 @@ pub fn validate(
             max: params.max_value_bytes,
         });
     }
-    let recomputed = compute_commitment(&witness.value, &witness.nonce);
+    let recomputed = compute_commitment(
+        CIRCUIT_ID,
+        &witness_to_felts(&witness.value),
+        &witness.nonce,
+    );
     if recomputed != public.commitment {
         return Err(ValidateError::CommitmentMismatch);
     }
     Ok(())
 }
 
+/// Maximum number of felts returned by `witness_to_felts`, regardless of
+/// the actual value length. Set to `20` so that the **total Rescue input
+/// length** is exactly 32 felts (= 4 absorption blocks × 8 rate width),
+/// giving a clean AIR with all 4 blocks absorbing the full rate.
+///
+/// Breakdown of the 32 input felts to `compute_commitment`:
+/// `tag(5) + circuit_id(1) + length_felt(1) + padded_witness(20) + nonce(5) = 32`.
+///
+/// 20 felts accommodates any witness up to `139 bytes` (= `20 × 7 − 1`
+/// for the `0x01` suffix), which comfortably covers
+/// `DEFAULT_MAX_VALUE_BYTES = 128`.
+///
+/// Why fixed? The downstream Winterfell AIR has a fixed trace shape
+/// (Issue 1 from `docs/STEP_2B_COMMITMENT_DESIGN.md`). Every commitment
+/// absorbs exactly 20 felts of witness regardless of `value.len()`;
+/// the `0x01` suffix marks end-of-value and zero-padding distinguishes
+/// shorter values from longer-with-trailing-zeros variants.
+pub const MAX_PADDED_WITNESS_FELTS: usize = 20;
+
+/// Canonical felt-encoding of the witness value for the v2 commitment
+/// scheme. Returns AT LEAST `MAX_PADDED_WITNESS_FELTS` felts (exactly
+/// that count for any value with `len ≤ DEFAULT_MAX_VALUE_BYTES`).
+///
+/// Encoding:
+/// 1. Append `0x01` distinguishing suffix to `value`.
+/// 2. Chunk into 7-byte little-endian Goldilocks limbs via `bytes_to_field`.
+/// 3. Zero-pad the felt vector up to `MAX_PADDED_WITNESS_FELTS`.
+///
+/// For values larger than `DEFAULT_MAX_VALUE_BYTES`, the natural felt
+/// count exceeds `MAX_PADDED_WITNESS_FELTS` and no shrinking happens —
+/// `commit()` still produces a digest for such values (a different one
+/// than the AIR would compute), but `validate()` rejects oversize values
+/// before the AIR ever runs. The AIR's own trace builder will assert
+/// `MAX_PADDED_WITNESS_FELTS` exactly.
+///
+/// The `0x01` suffix prevents collisions where `bytes_to_field` would
+/// otherwise collapse trailing-zero variants (e.g. `"abc"` vs `"abc\0"`)
+/// into the same `Felt` within the last 7-byte chunk. Zero-padding to a
+/// fixed felt count then makes the trace shape fixed for the AIR; the
+/// suffix's position within the felts marks the real end-of-value, so
+/// distinct values still encode to distinct felt vectors.
+///
+/// Collision-freeness argument (for values within max): two byte values
+/// `v1 != v2` produce suffix-padded sequences `v1‖[0x01]` and `v2‖[0x01]`,
+/// each then zero-padded to `MAX_PADDED_WITNESS_FELTS` felts. If `v1`
+/// and `v2` differ in length, the suffix `0x01` lands at distinct byte
+/// positions — at least one felt differs. If same length, stripping
+/// the common suffix gives `v1 == v2`, contradiction.
+pub fn witness_to_felts(value: &[u8]) -> Vec<Felt> {
+    let mut padded = Vec::with_capacity(value.len() + 1);
+    padded.extend_from_slice(value);
+    padded.push(0x01);
+    let mut felts = bytes_to_field(&padded);
+    while felts.len() < MAX_PADDED_WITNESS_FELTS {
+        felts.push(Felt::new(0));
+    }
+    felts
+}
+
 /// Build the public commitment from a witness. Helper for callers that
 /// construct the public inputs from the witness (the typical prover path).
 pub fn commit(witness: &Witness) -> Digest {
-    compute_commitment(&witness.value, &witness.nonce)
+    compute_commitment(
+        CIRCUIT_ID,
+        &witness_to_felts(&witness.value),
+        &witness.nonce,
+    )
 }
 
-/// Generate a stub proof.
+/// Generate a proof.
+///
+/// - Under `stub-proofs` (Phase 2A default): emits the 120-byte
+///   `StubProof` artifact.
+/// - Under `prod-proofs-preimage` (Phase 2B): runs the placeholder
+///   Winterfell AIR (see `air.rs` SCOPE notes); Step 2.b replaces the AIR
+///   body with the real Rescue-Prime relation.
 ///
 /// # Errors
-/// `ValidateError` if the witness/public-input pair is inconsistent.
-///
-/// # Phase 2B TODO
-/// Replace the body with a Winterfell `Air` impl that constrains:
-///   - Rescue-Prime over `(value_padded ‖ nonce)` equals `commitment`.
-///   - `len(value) <= max_value_bytes` (range check via boolean decomposition).
+/// `ValidateError` if the witness/public-input pair is inconsistent, or
+/// (when prod-proofs are enabled) if the Winterfell prover fails.
 pub fn prove(
     witness: &Witness,
     public: &PublicInputs,
     params: &Params,
 ) -> Result<Vec<u8>, ValidateError> {
     validate(witness, public, params)?;
-    let proof = StubProof::build(CIRCUIT_ID, public.commitment, public.digest());
-    Ok(proof.to_bytes().to_vec())
+    #[cfg(feature = "prod-proofs-preimage")]
+    {
+        use trusset_circuits_common::stark_options;
+        let limbs = prover::digest_to_air_limbs(&public.commitment);
+        let pi = air::PreimageAirPublicInputs { commitment: limbs };
+        let seed = [0u8; 32];
+        let bytes =
+            prover::build_proof(&witness.value, &witness.nonce, &pi, stark_options(), &seed)
+                .map_err(|e| ValidateError::WinterfellProverError(format!("{e:?}")))?;
+        Ok(bytes)
+    }
+    #[cfg(not(feature = "prod-proofs-preimage"))]
+    {
+        let proof = StubProof::build(CIRCUIT_ID, public.commitment, public.digest());
+        Ok(proof.to_bytes().to_vec())
+    }
 }
 
-/// Verify a stub proof against public inputs. Phase 2B replaces this with
-/// `winter_verifier::verify(proof, public_inputs, air)`.
+/// Verify a proof against public inputs.
 pub fn verify(proof_bytes: &[u8], public: &PublicInputs) -> Result<(), VerifyError> {
-    let parsed = StubProof::from_bytes(proof_bytes)?;
-    parsed.check(CIRCUIT_ID, &public.commitment, &public.digest())?;
-    Ok(())
+    #[cfg(feature = "prod-proofs-preimage")]
+    {
+        let limbs = prover::digest_to_air_limbs(&public.commitment);
+        let pi = air::PreimageAirPublicInputs { commitment: limbs };
+        verifier::verify_proof(proof_bytes, pi).map_err(VerifyError::WinterfellVerifyError)
+    }
+    #[cfg(not(feature = "prod-proofs-preimage"))]
+    {
+        let parsed = StubProof::from_bytes(proof_bytes)?;
+        parsed.check(CIRCUIT_ID, &public.commitment, &public.digest())?;
+        Ok(())
+    }
 }
 
 /// Canonical commitment helper for variable-length value bytes.
-/// Re-exported for the prover binary; identical to `compute_commitment` from
-/// `trusset_circuits_common` but namespaced under the circuit so callers
-/// don't have to import the common crate directly.
+/// Re-exported for the prover binary; convenience wrapper around the
+/// circuit's `witness_to_felts` + `compute_commitment` chain.
 pub fn commit_value(value: &[u8], nonce: &[u8; NONCE_LEN]) -> Digest {
-    compute_commitment(value, nonce)
+    compute_commitment(CIRCUIT_ID, &witness_to_felts(value), nonce)
 }
 
 /// Length of a stub proof for this circuit (constant across all four).
@@ -203,11 +313,116 @@ mod tests {
         assert_eq!(Params::default().max_value_bytes, DEFAULT_MAX_VALUE_BYTES);
     }
 
+    /// Regression: prior to the `0x01` suffix in `witness_to_felts`,
+    /// `bytes_to_field("abc")` and `bytes_to_field("abc\0")` collapsed to
+    /// the same `Felt` (both zero-pad the same 7-byte chunk to the same
+    /// `u64`), producing identical commitments for distinct byte values.
+    /// That's a hiding-commitment soundness gap. This test pins that the
+    /// suffix breaks the collision.
+    #[test]
+    fn commitment_distinguishes_trailing_zero_byte_within_chunk() {
+        let nonce = [0xcd; NONCE_LEN];
+        let c_short = commit(&Witness {
+            value: b"abc".to_vec(),
+            nonce,
+        });
+        let c_with_zero = commit(&Witness {
+            value: b"abc\0".to_vec(),
+            nonce,
+        });
+        let c_with_two_zeros = commit(&Witness {
+            value: b"abc\0\0".to_vec(),
+            nonce,
+        });
+        assert_ne!(c_short, c_with_zero, "abc vs abc\\0 must differ");
+        assert_ne!(c_short, c_with_two_zeros, "abc vs abc\\0\\0 must differ");
+        assert_ne!(
+            c_with_zero, c_with_two_zeros,
+            "abc\\0 vs abc\\0\\0 must differ"
+        );
+    }
+
+    #[test]
+    fn commitment_distinguishes_empty_from_single_zero() {
+        let nonce = [0xcd; NONCE_LEN];
+        let c_empty = commit(&Witness {
+            value: vec![],
+            nonce,
+        });
+        let c_zero = commit(&Witness {
+            value: vec![0u8],
+            nonce,
+        });
+        assert_ne!(
+            c_empty, c_zero,
+            "empty value and single zero byte must commit distinctly"
+        );
+    }
+
+    /// `witness_to_felts` must always return exactly `MAX_PADDED_WITNESS_FELTS`
+    /// felts so the AIR can use a fixed trace shape.
+    #[test]
+    fn witness_to_felts_padding_returns_fixed_felt_count() {
+        for len in [0usize, 1, 6, 7, 13, 14, 50, 100, 128] {
+            let value: Vec<u8> = (0u8..len as u8).collect();
+            let felts = witness_to_felts(&value);
+            assert_eq!(
+                felts.len(),
+                MAX_PADDED_WITNESS_FELTS,
+                "value.len() = {len} should still produce {} felts",
+                MAX_PADDED_WITNESS_FELTS
+            );
+        }
+    }
+
+    /// Padding must NOT collapse byte values that differ in their actual
+    /// content but happen to share the same felt-vector length after
+    /// padding. The 0x01 suffix at the real end-of-value position
+    /// distinguishes shorter values from longer ones.
+    #[test]
+    fn padded_witness_distinguishes_different_lengths_at_chunk_boundaries() {
+        // value.len() = 6: suffix lands at byte 6 in first chunk
+        // value.len() = 7: suffix lands at byte 0 of second chunk
+        let nonce = [0x77; NONCE_LEN];
+        let c_six = commit(&Witness {
+            value: vec![0xaa; 6],
+            nonce,
+        });
+        let c_seven = commit(&Witness {
+            value: vec![0xaa; 7],
+            nonce,
+        });
+        assert_ne!(
+            c_six, c_seven,
+            "6-byte and 7-byte values must commit distinctly"
+        );
+    }
+
+    /// Oversize values (those larger than the AIR's max) produce more
+    /// than `MAX_PADDED_WITNESS_FELTS` felts. `commit()` works on them,
+    /// but `validate()` rejects them BEFORE the AIR sees them, and the
+    /// AIR's trace builder asserts the exact felt count.
+    #[test]
+    fn witness_to_felts_oversize_value_exceeds_max() {
+        let too_long = vec![0u8; DEFAULT_MAX_VALUE_BYTES + 100];
+        let felts = witness_to_felts(&too_long);
+        assert!(
+            felts.len() > MAX_PADDED_WITNESS_FELTS,
+            "oversize value should produce a felt count larger than the AIR-fixed max"
+        );
+    }
+
     #[test]
     fn params_hash_changes_with_params() {
         assert_ne!(
-            Params { max_value_bytes: 128 }.hash(),
-            Params { max_value_bytes: 64 }.hash()
+            Params {
+                max_value_bytes: 128
+            }
+            .hash(),
+            Params {
+                max_value_bytes: 64
+            }
+            .hash()
         );
     }
 
@@ -235,7 +450,10 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(matches!(err, ValidateError::ValueTooLong { len: 200, max: 128 }));
+        assert!(matches!(
+            err,
+            ValidateError::ValueTooLong { len: 200, max: 128 }
+        ));
     }
 
     #[test]
@@ -255,8 +473,17 @@ mod tests {
         let w = fixture_witness();
         let p = fixture_public(&w);
         let bytes = prove(&w, &p, &Params::default()).unwrap();
+        // Stub-mode proofs are exactly 120 bytes; real Winterfell proofs
+        // are several KB. The length assertion only applies in stub mode.
+        #[cfg(not(feature = "prod-proofs-preimage"))]
         assert_eq!(bytes.len(), proof_len_bytes());
-        assert!(verify(&bytes, &p).is_ok());
+        #[cfg(feature = "prod-proofs-preimage")]
+        assert!(
+            bytes.len() > proof_len_bytes(),
+            "real proof should exceed stub size"
+        );
+        let r = verify(&bytes, &p);
+        assert!(r.is_ok(), "verify failed: {:?}", r);
     }
 
     #[test]
@@ -279,19 +506,24 @@ mod tests {
         let w = fixture_witness();
         let p = fixture_public(&w);
         let mut bytes = prove(&w, &p, &Params::default()).unwrap();
-        bytes[100] ^= 0x01;
+        // Tamper a byte in the proof; both stub and real Winterfell proofs
+        // must reject it. Pick an index that falls inside both formats.
+        let idx = bytes.len() / 2;
+        bytes[idx] ^= 0x01;
         assert!(verify(&bytes, &p).is_err());
     }
 
+    /// Stub-specific: tampering byte 16 (the stub magic + circuit-id byte)
+    /// is meaningful only in the stub format. The Winterfell verifier
+    /// rejects on the broader cryptographic check, not on a byte-16
+    /// magic, so we gate this test to stub mode.
+    #[cfg(not(feature = "prod-proofs-preimage"))]
     #[test]
     fn verify_rejects_wrong_circuit_id_bytes() {
         let w = fixture_witness();
         let p = fixture_public(&w);
         let mut bytes = prove(&w, &p, &Params::default()).unwrap();
         bytes[16] = CircuitId::TierThreshold.as_u8();
-        // The binding tag is computed against PreimageKnowledge, so flipping
-        // the id alone causes BindingTagMismatch — but if both id and tag
-        // are tampered, WrongCircuitId fires first.
         assert!(verify(&bytes, &p).is_err());
     }
 
@@ -318,5 +550,125 @@ mod tests {
         let a = prove(&w, &p, &Params::default()).unwrap();
         let b = prove(&w, &p, &Params::default()).unwrap();
         assert_eq!(a, b, "stub proof must be byte-deterministic across runs");
+    }
+
+    // -------------------------------------------------------------
+    // AIR-time negative-witness sweeps (Stage 14)
+    //
+    // These bypass `validate()` and call `prover::build_proof` directly
+    // with witnesses whose commitment does NOT open to the public
+    // commitment. The AIR's row-FINAL_ROW boundary constraint
+    // (`state[4..8] = commitment`) MUST cause the prover to fail before
+    // emitting a proof, confirming the commitment-opening soundness we
+    // shipped in Stage 11 is real (not trivially-accepted).
+    //
+    // The length-range predicate (`value.len() ≤ max_value_bytes`) is
+    // still enforced by `validate()` OUTSIDE the AIR until the in-AIR
+    // length-range predicate ships (Stage 15+ separate design).
+    // -------------------------------------------------------------
+
+    #[cfg(feature = "prod-proofs-preimage")]
+    fn try_prove_air_only(
+        value_for_trace: &[u8],
+        nonce_for_trace: [u8; NONCE_LEN],
+        public_commitment: trusset_circuits_common::Digest,
+    ) -> Result<Vec<u8>, String> {
+        use trusset_circuits_common::stark_options;
+        let limbs = prover::digest_to_air_limbs(&public_commitment);
+        let pi = air::PreimageAirPublicInputs { commitment: limbs };
+        // Debug builds: Winterfell `debug_assert!`s panic on bad trace.
+        // Release builds: `debug_assert!`s are compiled out; the prover emits
+        // invalid bytes which the verifier then rejects. Run both stages so
+        // the wrapper's rejection contract works in both profiles.
+        let prove_result = std::panic::catch_unwind(|| {
+            prover::build_proof(
+                value_for_trace,
+                &nonce_for_trace,
+                &pi,
+                stark_options(),
+                &[0u8; 32],
+            )
+        });
+        let proof_bytes = match prove_result {
+            Ok(Ok(b)) => b,
+            Ok(Err(e)) => return Err(format!("ProverError: {e:?}")),
+            Err(p) => {
+                let msg = p
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                return Err(format!("Prover panic: {msg}"));
+            }
+        };
+        let pi_verify = air::PreimageAirPublicInputs { commitment: limbs };
+        match verifier::verify_proof(&proof_bytes, pi_verify) {
+            Ok(()) => Ok(proof_bytes),
+            Err(e) => Err(format!("VerifierError: {e:?}")),
+        }
+    }
+
+    #[cfg(feature = "prod-proofs-preimage")]
+    #[test]
+    fn air_rejects_different_value_for_same_commitment() {
+        // Build the public commitment from "alice"; try to prove with "bob".
+        // The trace builder will produce a trace whose final-row rate is
+        // the commitment of "bob", not "alice" — boundary constraint fails.
+        let nonce = [0x33u8; NONCE_LEN];
+        let alice_witness = Witness {
+            value: b"alice".to_vec(),
+            nonce,
+        };
+        let alice_commitment = commit(&alice_witness);
+        let result = try_prove_air_only(b"bob", nonce, alice_commitment);
+        assert!(
+            result.is_err(),
+            "AIR must reject value='bob' against alice's commitment, got Ok"
+        );
+    }
+
+    #[cfg(feature = "prod-proofs-preimage")]
+    #[test]
+    fn air_rejects_different_nonce_for_same_commitment() {
+        // Build commitment from (alice, nonce1); try to prove with (alice, nonce2).
+        let alice_with_nonce1 = Witness {
+            value: b"alice".to_vec(),
+            nonce: [0x11u8; NONCE_LEN],
+        };
+        let public_commitment = commit(&alice_with_nonce1);
+        let result = try_prove_air_only(b"alice", [0x22u8; NONCE_LEN], public_commitment);
+        assert!(
+            result.is_err(),
+            "AIR must reject mismatched nonce for same value, got Ok"
+        );
+    }
+
+    #[cfg(feature = "prod-proofs-preimage")]
+    #[test]
+    fn air_rejects_tampered_commitment_limbs() {
+        // Honest witness, but tamper one limb of the public commitment.
+        let w = fixture_witness();
+        let mut tampered = commit(&w);
+        tampered[2] = trusset_circuits_common::Felt::new(0xdeadbeefu64);
+        let result = try_prove_air_only(&w.value, w.nonce, tampered);
+        assert!(
+            result.is_err(),
+            "AIR must reject tampered commitment, got Ok"
+        );
+    }
+
+    #[cfg(feature = "prod-proofs-preimage")]
+    #[test]
+    fn air_accepts_honest_witness() {
+        // Positive control: confirm the negative tests above are meaningful
+        // by verifying that an HONEST witness passes the same code path.
+        let w = fixture_witness();
+        let public_commitment = commit(&w);
+        let result = try_prove_air_only(&w.value, w.nonce, public_commitment);
+        assert!(
+            result.is_ok(),
+            "AIR must accept honest witness through the same code path, got {:?}",
+            result.err()
+        );
     }
 }

@@ -29,6 +29,12 @@ pub const SEED_LEN: usize = 32;
 
 const SALT_SUBJECT: &[u8] = b"trusset-kyc-v2/subject";
 const SALT_LEAF: &[u8] = b"trusset-kyc-v2/leaf";
+const SALT_PROVER: &[u8] = b"trusset-kyc-v2/prover";
+
+/// HKDF info-string suffix for the Phase 2B Winterfell prover PRNG seed.
+/// `prover_seed(leaf_seed, field_name)` is the ONLY entropy source the
+/// Winterfell prover sees — no OS randomness, no time-of-day.
+pub const PROVER_SEED_INFO: &[u8] = b"prover-seed";
 
 /// Derive the 32-byte per-subject seed. Auto-zeroed on drop.
 pub fn derive_subject_seed(
@@ -66,6 +72,25 @@ pub fn derive_leaf_seed(
     info.extend_from_slice(params_hash);
 
     let hk = Hkdf::<Sha256>::new(Some(SALT_LEAF), subject_seed);
+    let mut out = Zeroizing::new([0u8; SEED_LEN]);
+    hk.expand(&info, out.as_mut())
+        .expect("HKDF-SHA256 expand to 32 bytes is infallible");
+    out
+}
+
+/// Derive the 32-byte per-leaf Winterfell prover PRNG seed (Phase 2B).
+/// Auto-zeroed on drop. Folds the field name in so that two circuits sharing
+/// a master key + subject can never produce identical prover transcripts.
+pub fn derive_prover_seed(
+    leaf_seed: &[u8; SEED_LEN],
+    field_name: &[u8],
+) -> Zeroizing<[u8; SEED_LEN]> {
+    let mut info = Vec::with_capacity(PROVER_SEED_INFO.len() + 1 + field_name.len());
+    info.extend_from_slice(PROVER_SEED_INFO);
+    info.push(b'/');
+    info.extend_from_slice(field_name);
+
+    let hk = Hkdf::<Sha256>::new(Some(SALT_PROVER), leaf_seed);
     let mut out = Zeroizing::new([0u8; SEED_LEN]);
     hk.expand(&info, out.as_mut())
         .expect("HKDF-SHA256 expand to 32 bytes is infallible");
@@ -152,6 +177,36 @@ mod tests {
         let subj = derive_subject_seed(&master(), b"0xA", 20587, &config_hash(), 1);
         let a = derive_leaf_seed(&subj, b"x", 1, &[0u8; 32]);
         let b = derive_leaf_seed(&subj, b"x", 1, &[1u8; 32]);
+        assert_ne!(a.as_ref(), b.as_ref());
+    }
+
+    #[test]
+    fn prover_seed_is_deterministic() {
+        let subj = derive_subject_seed(&master(), b"0xA", 20587, &config_hash(), 1);
+        let leaf = derive_leaf_seed(&subj, b"dateOfBirth", 1, &[0u8; 32]);
+        let a = derive_prover_seed(&leaf, b"dateOfBirth");
+        let b = derive_prover_seed(&leaf, b"dateOfBirth");
+        assert_eq!(a.as_ref(), b.as_ref());
+    }
+
+    #[test]
+    fn prover_seed_differs_from_leaf_seed() {
+        let subj = derive_subject_seed(&master(), b"0xA", 20587, &config_hash(), 1);
+        let leaf = derive_leaf_seed(&subj, b"dateOfBirth", 1, &[0u8; 32]);
+        let prov = derive_prover_seed(&leaf, b"dateOfBirth");
+        // The prover seed must NEVER equal the leaf seed — the leaf seed is
+        // already used as the hiding-commitment nonce, so reusing it as the
+        // STARK PRNG seed would leak the commitment randomness through the
+        // FRI transcript.
+        assert_ne!(prov.as_ref(), leaf.as_ref());
+    }
+
+    #[test]
+    fn prover_seed_field_name_change() {
+        let subj = derive_subject_seed(&master(), b"0xA", 20587, &config_hash(), 1);
+        let leaf = derive_leaf_seed(&subj, b"dateOfBirth", 1, &[0u8; 32]);
+        let a = derive_prover_seed(&leaf, b"dateOfBirth");
+        let b = derive_prover_seed(&leaf, b"firstName");
         assert_ne!(a.as_ref(), b.as_ref());
     }
 }

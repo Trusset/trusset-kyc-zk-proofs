@@ -35,9 +35,8 @@ pub fn compute_leaf_hash(
     public_digest: &Digest,
     proof_digest: &Digest,
 ) -> Digest {
-    let mut body = Vec::with_capacity(
-        4 + field_name.len() + 1 + 4 + wallet_bytes.len() + 8 + 32 + 32 + 32,
-    );
+    let mut body =
+        Vec::with_capacity(4 + field_name.len() + 1 + 4 + wallet_bytes.len() + 8 + 32 + 32 + 32);
     write_canonical_bytes(&mut body, field_name.as_bytes());
     body.push(circuit_id.as_u8());
     write_canonical_bytes(&mut body, wallet_bytes);

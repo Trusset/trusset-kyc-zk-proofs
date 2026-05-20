@@ -38,7 +38,11 @@ fn cli_emits_valid_json_for_country_allowlist() {
         ])
         .status()
         .unwrap();
-    assert!(status.success(), "list-commit binary exited with {:?}", status);
+    assert!(
+        status.success(),
+        "list-commit binary exited with {:?}",
+        status
+    );
 
     let json: ListCommitmentFile =
         serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
@@ -69,12 +73,19 @@ fn cli_rejects_duplicates_by_default() {
         .unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(stderr.contains("duplicate"), "expected duplicate-error stderr, got: {}", stderr);
+    assert!(
+        stderr.contains("duplicate"),
+        "expected duplicate-error stderr, got: {}",
+        stderr
+    );
 }
 
 #[test]
 fn cli_help_works_and_exits_zero() {
-    let out = Command::new(list_commit_binary()).args(["--help"]).output().unwrap();
+    let out = Command::new(list_commit_binary())
+        .args(["--help"])
+        .output()
+        .unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("Usage:"));

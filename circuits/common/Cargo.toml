@@ -8,10 +8,47 @@ authors.workspace = true
 repository.workspace = true
 description = "Shared cryptographic primitives for Trusset KYC circuits: Rescue-Prime gadgets, Goldilocks helpers, domain tags, canonical serialization."
 
+[features]
+# Stage 18 (2026-05-20): workspace-wide default flipped from
+# `stub-proofs` to `prod-proofs`. All four circuits now have full
+# in-AIR cryptographic soundness; the default `cargo build` /
+# `cargo test --workspace` exercises the real Winterfell AIRs. The
+# stub-proofs path is preserved for CI smoke runs and operator-facing
+# `--skip-proofs` flag (which zeroes proof bytes regardless of which
+# feature is built).
+default = ["prod-proofs"]
+
+# Stub-proof path: 120-byte deterministic placeholder, no STARK soundness.
+# Available for CI smoke runs after the prod flip.
+stub-proofs = []
+
+# Aggregate flag enabling real Winterfell proofs across all four circuits.
+# Each circuit also exposes its own granular flag so partial rollout is
+# possible during Phase 2B development.
+prod-proofs = [
+    "prod-proofs-preimage",
+    "prod-proofs-tier",
+    "prod-proofs-age",
+    "prod-proofs-set",
+]
+
+# Per-circuit flags (granular rollout during Phase 2B). These have no
+# direct effect inside circuits-common; they exist here so downstream
+# circuit crates can `default-features = false` and pick a subset.
+prod-proofs-preimage = []
+prod-proofs-tier = []
+prod-proofs-age = []
+prod-proofs-set = []
+
 [dependencies]
 # Winterfell math/crypto — pin major.minor in lockstep across the workspace.
 winter-math = "0.13"
 winter-crypto = "0.13"
+# Air + prover + verifier traits (Phase 2B). Used by `STARK_OPTIONS` here
+# and re-exported by the per-circuit `air.rs` / `prover.rs` / `verifier.rs`
+# modules.
+winter-air = "0.13"
+winterfell = "0.13"
 
 # Determinism: HKDF-SHA256 for per-subject / per-leaf seed derivation.
 hkdf = "0.12"

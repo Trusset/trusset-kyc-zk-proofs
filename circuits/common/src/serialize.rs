@@ -136,7 +136,10 @@ mod tests {
 
     #[test]
     fn hex_decode_rejects_wrong_length() {
-        assert_eq!(hex_to_digest("0x00").unwrap_err(), HexDecodeError::WrongLength);
+        assert_eq!(
+            hex_to_digest("0x00").unwrap_err(),
+            HexDecodeError::WrongLength
+        );
         assert_eq!(hex_to_digest("").unwrap_err(), HexDecodeError::WrongLength);
     }
 
@@ -153,6 +156,9 @@ mod tests {
     fn hex_decode_accepts_with_or_without_prefix() {
         let raw = "f".repeat(64);
         let prefixed = format!("0x{}", raw);
-        assert_eq!(hex_to_digest(&raw).unwrap(), hex_to_digest(&prefixed).unwrap());
+        assert_eq!(
+            hex_to_digest(&raw).unwrap(),
+            hex_to_digest(&prefixed).unwrap()
+        );
     }
 }

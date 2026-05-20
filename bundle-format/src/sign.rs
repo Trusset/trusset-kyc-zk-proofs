@@ -11,7 +11,11 @@ pub const PUBLIC_KEY_LEN: usize = 32;
 /// Verify an ed25519 signature against a raw 32-byte public key. Returns
 /// `false` on any parse error, length mismatch, or signature failure — the
 /// verifier path treats all of these as the same "untrusted bundle" outcome.
-pub fn verify(public_key: &[u8; PUBLIC_KEY_LEN], message: &[u8], signature: &[u8; SIGNATURE_LEN]) -> bool {
+pub fn verify(
+    public_key: &[u8; PUBLIC_KEY_LEN],
+    message: &[u8],
+    signature: &[u8; SIGNATURE_LEN],
+) -> bool {
     let Ok(vk) = VerifyingKey::from_bytes(public_key) else {
         return false;
     };

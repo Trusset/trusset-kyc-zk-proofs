@@ -29,7 +29,11 @@ cargo build --release --workspace --locked 2>/dev/null \
 
 if rustup target list --installed 2>/dev/null | grep -q '^wasm32-unknown-unknown$'; then
     log "Building WASM verifier..."
-    cargo build --release --target wasm32-unknown-unknown -p trusset-verifier --features wasm
+    # Use cargo rustc --crate-type=cdylib instead of declaring cdylib in
+    # verifier/Cargo.toml. Declaring it there triggers a workspace-wide
+    # `cargo test --workspace` link failure on macOS x86_64 (cargo issue
+    # #6313: rlib+cdylib dual-output collides with the sibling bin).
+    cargo rustc --release --target wasm32-unknown-unknown -p trusset-verifier --features wasm --lib --crate-type=cdylib
 else
     log "Skipping WASM verifier (wasm32-unknown-unknown target not installed)."
 fi

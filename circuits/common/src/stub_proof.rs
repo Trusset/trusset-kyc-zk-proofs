@@ -20,10 +20,89 @@
 //! 56..88   pub_digest   (Digest)
 //! 88..120  binding_tag  (Digest)
 //! ```
+//!
+//! ## Phase 2B byte-exactness reference
+//!
+//! Phase 2B replaces only the *content* of `proofs/<field>.bin` with real
+//! Winterfell STARK bytes. Every surrounding byte (commitment, publicInputs,
+//! publicDigest, paramsHash, proofDigest, leafHash, kycHash, signing
+//! canonical view, secrets.enc layout) must stay byte-identical for the same
+//! witness + master key. The contracts below are the ground truth — when a
+//! new AIR is wired in, its public inputs MUST hash to the same publicDigest
+//! the stub path already produces.
+//!
+//! ### Domain tags (32-byte ASCII, see `domain.rs`)
+//!
+//! ```text
+//! LEAF_TAG            "TRUSSET-KYC-V2:LEAF-------------"  (subject leaf)
+//! NODE_TAG            "TRUSSET-KYC-V2:NODE-------------"  (subject Merkle)
+//! PUBLIC_DIGEST_TAG   "TRUSSET-KYC-V2:PUB-DIGEST-------"  (public-input digest)
+//! PROOF_DIGEST_TAG    "TRUSSET-KYC-V2:PRF-DIGEST-------"  (proof-bytes digest)
+//! SET_LEAF_TAG        "TRUSSET-KYC-V2:SET-LEAF---------"  (allowlist leaves)
+//! SET_NODE_TAG        "TRUSSET-KYC-V2:SET-NODE---------"  (allowlist Merkle)
+//! COMMITMENT_TAG      "TRUSSET-KYC-V2:COMMIT-----------"  (hiding commitment)
+//! ```
+//!
+//! ### Canonical serialization (`serialize.rs`)
+//!
+//! - `u64`: little-endian, 8 bytes
+//! - `u32`: little-endian, 4 bytes
+//! - `u8`: 1 byte
+//! - byte-slice: `u32_le(len) ‖ bytes`
+//! - `Digest`: 4 × `u64::to_be_bytes()` = 32 bytes
+//!
+//! ### Per-circuit `paramsHash` (SHA-256 over tagged params)
+//!
+//! ```text
+//! age_threshold:       SHA256("trusset-kyc-v2:age_threshold:params"
+//!                              ‖ min_age_days_le8)
+//! set_membership:      SHA256("trusset-kyc-v2:set_membership:params"
+//!                              ‖ u64_le(len(list_id)) ‖ list_id_utf8)
+//! tier_threshold:      SHA256("trusset-kyc-v2:tier_threshold:params"
+//!                              ‖ min_tier_u8)
+//! preimage_knowledge:  SHA256("trusset-kyc-v2:preimage_knowledge:params"
+//!                              ‖ max_value_bytes_le8)
+//! ```
+//!
+//! ### Per-circuit `publicDigest` canonical bytes
+//!
+//! All four pipe their canonical-bytes through `Rescue(PUBLIC_DIGEST_TAG ‖ ...)`.
+//!
+//! ```text
+//! age_threshold (48 B):       commitment_be32 ‖ min_age_days_le8
+//!                              ‖ current_epoch_days_le8
+//! set_membership (65 B):      commitment_be32 ‖ set_root_be32 ‖ set_depth_u8
+//! tier_threshold (33 B):      commitment_be32 ‖ min_tier_u8
+//! preimage_knowledge (32 B):  commitment_be32
+//! ```
+//!
+//! ### Hiding commitment (identical formula across all four circuits)
+//!
+//! ```text
+//! commitment = Rescue(COMMITMENT_TAG ‖ u32_le(len(witness_bytes))
+//!                                    ‖ witness_bytes ‖ nonce_32)
+//! ```
+//!
+//! - age:                 `witness_bytes = dob_days_le8`               (8 B)
+//! - tier:                `witness_bytes = [tier_u8]`                  (1 B)
+//! - set / preimage:      `witness_bytes = value` (variable)
+//!
+//! ### Per-leaf nonce (HKDF, `seed.rs`)
+//!
+//! ```text
+//! subject_seed = HKDF-SHA256(ikm=MASTER_KEY, salt=b"trusset-kyc-v2/subject",
+//!                            info=subject_id ‖ epoch_days_le8 ‖ config_hash_32
+//!                                 ‖ circuits_version_le4)
+//! leaf_seed    = HKDF-SHA256(ikm=subject_seed, salt=b"trusset-kyc-v2/leaf",
+//!                            info=field_name ‖ circuit_id_u8 ‖ params_hash_32)
+//! ```
+//!
+//! Phase 2B extends this with `prover_seed = HKDF(leaf_seed, "prover-seed")`
+//! as the ONLY entropy source for the Winterfell prover PRNG (no `OsRng`).
 
 use crate::{
-    digest_from_bytes, digest_to_bytes, hash_bytes_with_tag, CircuitId, Digest, PROOF_DIGEST_TAG,
-    DIGEST_LEN_BYTES,
+    digest_from_bytes, digest_to_bytes, hash_bytes_with_tag, CircuitId, Digest, DIGEST_LEN_BYTES,
+    PROOF_DIGEST_TAG,
 };
 
 pub const STUB_MAGIC: &[u8; 16] = b"TRUSSET-V2-STUB!";
@@ -131,8 +210,7 @@ impl StubProof {
         if &self.pub_digest != expected_pub_digest {
             return Err(StubProofError::PublicDigestMismatch);
         }
-        let expected_tag =
-            compute_binding_tag(self.circuit_id, &self.commitment, &self.pub_digest);
+        let expected_tag = compute_binding_tag(self.circuit_id, &self.commitment, &self.pub_digest);
         if self.binding_tag != expected_tag {
             return Err(StubProofError::BindingTagMismatch);
         }
@@ -140,11 +218,7 @@ impl StubProof {
     }
 }
 
-fn compute_binding_tag(
-    circuit_id: CircuitId,
-    commitment: &Digest,
-    pub_digest: &Digest,
-) -> Digest {
+fn compute_binding_tag(circuit_id: CircuitId, commitment: &Digest, pub_digest: &Digest) -> Digest {
     let mut buf = Vec::with_capacity(16 + 1 + DIGEST_LEN_BYTES + DIGEST_LEN_BYTES);
     buf.extend_from_slice(STUB_MAGIC);
     buf.push(circuit_id.as_u8());

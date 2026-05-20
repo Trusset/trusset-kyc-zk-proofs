@@ -82,7 +82,10 @@ pub fn hash_two_with_tag(tag: &[u8; DOMAIN_TAG_BYTES], a: &Digest, b: &Digest) -
 /// Re-export of the raw Rescue merge primitive, for circuits that need to
 /// constrain it inside an AIR without our domain-tag wrapper.
 pub fn rescue_merge_raw(a: &Digest, b: &Digest) -> Digest {
-    digest_from_element(Rp64_256::merge(&[element_from_digest(a), element_from_digest(b)]))
+    digest_from_element(Rp64_256::merge(&[
+        element_from_digest(a),
+        element_from_digest(b),
+    ]))
 }
 
 #[cfg(test)]
@@ -127,7 +130,10 @@ mod tests {
         let b = hash_bytes_with_tag(&LEAF_TAG, b"right");
         let ab = hash_two(&a, &b);
         let ba = hash_two(&b, &a);
-        assert_ne!(ab, ba, "merge must be order-sensitive — sort happens at the leaf layer");
+        assert_ne!(
+            ab, ba,
+            "merge must be order-sensitive — sort happens at the leaf layer"
+        );
     }
 
     #[test]

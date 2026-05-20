@@ -1,0 +1,53 @@
+{
+  "_comment": [
+    "Known-answer test for the preimage_knowledge circuit's Phase 2B integration.",
+    "",
+    "Scope: this file pins the PROOF BYTE DIGEST for a fixed (witness, public-inputs) pair",
+    "under the placeholder AIR. Once Step 2.b lands the real Rescue-Prime AIR, this file",
+    "must be re-frozen with the new bytes. Refresh procedure:",
+    "",
+    "  TRUSSET_KAT_REFRESH=1 cargo test -p trusset-circuit-preimage-knowledge \\",
+    "    --release --features prod-proofs-preimage --test proof_kat -- --include-ignored",
+    "",
+    "Determinism contract: Two prove() calls with the same witness, the same",
+    "ProofOptions (STARK_OPTIONS), and the same prover_seed MUST produce byte-identical",
+    "proof bytes. If proof_sha256 differs across runs, the Winterfell PRNG is leaking",
+    "entropy and the canary test (tests/e2e/canary.sh) will also fail.",
+    "",
+    "The placeholder AIR proves: 'I know commitment[0..4] such that they equal",
+    "public_inputs.commitment[0..4]'. Soundness-meaningless on its own; the file exists",
+    "to lock in the integration-level byte stability so any change to ProofOptions, hash",
+    "choice, or PRNG seeding is detected at CI time."
+  ],
+  "version": "phase-2b-step-2-placeholder",
+  "vectors": [
+    {
+      "name": "preimage_alice_fixture",
+      "params": { "maxValueBytes": 128 },
+      "witness": {
+        "value_hex": "416c696365",
+        "nonce_hex": "abababababababababababababababababababababababababababababababab"
+      },
+      "expected": {
+        "commitment_hex": null,
+        "public_digest_hex": null,
+        "proof_sha256_hex": null,
+        "_pending": "Frozen on the first refresh run; null while Phase 2B integration is in flight."
+      }
+    },
+    {
+      "name": "preimage_empty_value",
+      "params": { "maxValueBytes": 128 },
+      "witness": {
+        "value_hex": "",
+        "nonce_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected": {
+        "commitment_hex": null,
+        "public_digest_hex": null,
+        "proof_sha256_hex": null,
+        "_pending": "Frozen on the first refresh run."
+      }
+    }
+  ]
+}

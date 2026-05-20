@@ -11,12 +11,12 @@
 //!     output (the determinism canary).
 
 use std::collections::BTreeMap;
+use trusset_bundle_format::manifest::{canonical_signing_bytes, Manifest, CREATED_AT_SENTINEL};
 use trusset_circuit_age_threshold as age;
 use trusset_circuit_preimage_knowledge as preimage;
 use trusset_circuit_set_membership as set;
 use trusset_circuit_tier_threshold as tier;
 use trusset_circuits_common::hex_to_digest;
-use trusset_bundle_format::manifest::{canonical_signing_bytes, Manifest, CREATED_AT_SENTINEL};
 use trusset_prover::{
     bundle::build_subject_bundle,
     encrypt::decrypt_secrets,
@@ -152,7 +152,10 @@ fn end_to_end_pipeline_produces_valid_bundle() {
     let manifest_bytes = std::fs::read(dir.join("manifest.json")).unwrap();
     let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
     assert_eq!(manifest.kyc_hash, on_disk);
-    assert_eq!(manifest.mode, "stub");
+    // Stage 18 (2026-05-20): manifest.mode flipped from "stub" to
+    // "production" by default. The skip-proofs test below still
+    // checks the "stub" path.
+    assert_eq!(manifest.mode, "production");
     assert_eq!(manifest.created_at, now_iso());
     assert_eq!(manifest.leaves.len(), 4);
 
@@ -238,8 +241,7 @@ fn end_to_end_pipeline_produces_valid_bundle() {
         &ct,
     )
     .unwrap();
-    let entries: BTreeMap<String, serde_json::Value> =
-        serde_json::from_slice(&pt).unwrap();
+    let entries: BTreeMap<String, serde_json::Value> = serde_json::from_slice(&pt).unwrap();
     assert_eq!(entries["firstName"]["value"], serde_json::json!("Alice"));
     assert_eq!(
         entries["dateOfBirth"]["value"],
@@ -281,7 +283,12 @@ fn pipeline_is_byte_deterministic_across_two_runs() {
 
     // Every file in the bundle except createdAt-bearing manifest.json (which
     // depends on now_iso, identical here) must be byte-equal.
-    for name in &["kycHash.hex", "manifest.json", "manifest.sig", "secrets.enc"] {
+    for name in &[
+        "kycHash.hex",
+        "manifest.json",
+        "manifest.sig",
+        "secrets.enc",
+    ] {
         let a = std::fs::read(report_a.bundle_path.join(name)).unwrap();
         let b = std::fs::read(report_b.bundle_path.join(name)).unwrap();
         assert_eq!(a, b, "{} differs between runs", name);
@@ -370,14 +377,15 @@ fn skip_proofs_emits_zero_byte_proof_files_and_signature_still_verifies() {
 
     // The manifest signature still verifies — the leaf hashes now bind to
     // the zero-byte proof_digest, but that's a stable input.
-    let manifest_bytes =
-        std::fs::read(report.bundle_path.join("manifest.json")).unwrap();
+    let manifest_bytes = std::fs::read(report.bundle_path.join("manifest.json")).unwrap();
     let manifest: trusset_bundle_format::manifest::Manifest =
         serde_json::from_slice(&manifest_bytes).unwrap();
+    // Stage 18: skip_proofs mode should keep `mode: "stub"` while normal
+    // proves emit `mode: "production"`.
+    assert_eq!(manifest.mode, "stub", "skip_proofs must keep mode = stub");
     let mut for_sig = manifest.clone();
     for_sig.created_at = CREATED_AT_SENTINEL.to_string();
-    let payload =
-        trusset_bundle_format::manifest::canonical_signing_bytes(&for_sig).unwrap();
+    let payload = trusset_bundle_format::manifest::canonical_signing_bytes(&for_sig).unwrap();
     let sig_bytes = std::fs::read(report.bundle_path.join("manifest.sig")).unwrap();
     let mut sig_arr = [0u8; bf_sign::SIGNATURE_LEN];
     sig_arr.copy_from_slice(&sig_bytes);

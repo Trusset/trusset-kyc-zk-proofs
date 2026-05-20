@@ -20,7 +20,12 @@ export interface VerifyReport {
 export interface VerifyInvocation {
   bundlePath: string;
   publicKeyHex: string;
-  strict?: boolean;
+  /**
+   * Accept bundles with `manifest.mode == "stub"` (development bundles
+   * built with `--skip-proofs`). Default is to reject — strict mode is
+   * the post-Stage-18 default.
+   */
+  acceptStub?: boolean;
   /** Override binary path. Default: auto-discover. */
   verifierPath?: string;
 }
@@ -41,7 +46,7 @@ export async function runVerify(args: VerifyInvocation): Promise<VerifyResult> {
     args.publicKeyHex,
     '--json',
   ];
-  if (args.strict) cliArgs.push('--strict');
+  if (args.acceptStub) cliArgs.push('--accept-stub');
 
   return new Promise<VerifyResult>((resolve, reject) => {
     const child = spawn(binary, cliArgs, { stdio: ['ignore', 'pipe', 'pipe'] });

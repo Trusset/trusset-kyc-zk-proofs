@@ -5,6 +5,7 @@
 //! this library API directly to avoid relying on a stable CLI surface
 //! while phases are still in flux.
 
+pub mod audit;
 pub mod bundle;
 pub mod dispatch;
 pub mod encrypt;

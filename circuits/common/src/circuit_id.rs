@@ -33,6 +33,12 @@ impl CircuitId {
 
     /// Parse from the canonical lowercase snake_case name. Returns `None` for
     /// any unknown variant — callers should map this to `E_CONFIG`.
+    ///
+    /// Note: this inherent method intentionally shadows the `FromStr` trait
+    /// name. It's part of the public API contract (the existing
+    /// `name_roundtrip` test pins this exact identifier and `Option<Self>`
+    /// return shape), and `FromStr` would force `Err` instead of `None`.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "age_threshold" => Some(CircuitId::AgeThreshold),

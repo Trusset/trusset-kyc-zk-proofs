@@ -18,15 +18,15 @@ use crate::encrypt::encrypt_secrets;
 use crate::errors::{ErrorCode, ProverError, Result};
 use crate::job::{Job, JobSubject};
 use crate::manifest::build_manifest;
-use trusset_bundle_format::manifest::{
-    canonical_disk_bytes, canonical_signing_bytes, Manifest, CREATED_AT_SENTINEL,
-};
 use crate::merkle::compute_root;
 use crate::sign::{SigningSecret, SIGNATURE_LEN};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use trusset_bundle_format::manifest::{
+    canonical_disk_bytes, canonical_signing_bytes, Manifest, CREATED_AT_SENTINEL,
+};
 use trusset_circuit_set_membership as set;
 use trusset_circuits_common::{derive_subject_seed, digest_to_hex, CIRCUITS_VERSION};
 
@@ -48,8 +48,13 @@ pub fn build_subject_bundle(
     config_hash: &[u8; 32],
     now_iso: &str,
 ) -> Result<BundleReport> {
-    let subject_seed =
-        derive_subject_seed(master_key, subject.subject_id.as_bytes(), job.epoch_days, config_hash, CIRCUITS_VERSION);
+    let subject_seed = derive_subject_seed(
+        master_key,
+        subject.subject_id.as_bytes(),
+        job.epoch_days,
+        config_hash,
+        CIRCUITS_VERSION,
+    );
 
     // 1. Prove every leaf.
     let mut proved: Vec<ProvedLeaf> = Vec::with_capacity(subject.leaves.len());
@@ -90,6 +95,7 @@ pub fn build_subject_bundle(
         &proved,
         &job.list_commitments,
         &list_roots,
+        job.skip_proofs,
     );
 
     // 4. Sign the canonical signing view (sentinel timestamp).

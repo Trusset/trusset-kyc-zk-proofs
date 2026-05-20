@@ -59,9 +59,7 @@ fn do_verify(
     accept_stub: bool,
 ) -> Result<String, JsError> {
     if expected_public_key.len() != 32 {
-        return Err(JsError::new(
-            "expected_public_key must be exactly 32 bytes",
-        ));
+        return Err(JsError::new("expected_public_key must be exactly 32 bytes"));
     }
     let mut pk = [0u8; 32];
     pk.copy_from_slice(expected_public_key);

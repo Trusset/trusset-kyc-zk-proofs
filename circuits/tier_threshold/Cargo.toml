@@ -8,10 +8,32 @@ authors.workspace = true
 repository.workspace = true
 description = "Tier threshold predicate circuit: prove tier >= min_tier where tier in {RETAIL=1, PROFESSIONAL=2, ELIGIBLE_COUNTERPARTY=3}."
 
+[features]
+# Stage 18 (2026-05-20): default flipped to `prod-proofs-tier`.
+default = ["prod-proofs-tier"]
+stub-proofs = ["trusset-circuits-common/stub-proofs"]
+prod-proofs-tier = [
+    "trusset-circuits-common/prod-proofs-tier",
+    "dep:winterfell",
+    "dep:winter-air",
+    "dep:winter-math",
+    "dep:winter-crypto",
+    "dep:winter-utils",
+]
+
 [dependencies]
-trusset-circuits-common = { path = "../common" }
+trusset-circuits-common = { path = "../common", default-features = false }
 sha2 = "0.10"
 zeroize = { version = "1.8", features = ["derive"] }
+
+winterfell = { version = "0.13", optional = true }
+winter-air = { version = "0.13", optional = true }
+winter-math = { version = "0.13", optional = true }
+winter-crypto = { version = "0.13", optional = true }
+winter-utils = { version = "0.13", optional = true }
+
+[dev-dependencies]
+hex = "0.4"
 
 [lints]
 workspace = true

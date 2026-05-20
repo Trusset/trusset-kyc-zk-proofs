@@ -10,11 +10,26 @@
 //! (`config.security.epochDaysSource`, plan edge case 5) and recorded in
 //! the manifest so banks can diff against their verification time.
 //!
-//! # Status: Phase 2A — see `preimage_knowledge` for stub-mode caveat.
+//! # Status
+//!
+//! - **Stub path** (`--features stub-proofs`, Phase 2A default): typed
+//!   layer + 120-byte placeholder.
+//! - **Prod-proofs path** (`--features prod-proofs-age`, Phase 2B):
+//!   real Winterfell roundtrip via `air`, `prover`, `verifier`. Current
+//!   AIR is a PLACEHOLDER — does not enforce the age predicate yet.
+
+#[cfg(feature = "prod-proofs-age")]
+pub mod air;
+#[cfg(feature = "prod-proofs-age")]
+pub mod prover;
+#[cfg(feature = "prod-proofs-age")]
+pub mod verifier;
 
 use sha2::{Digest as _, Sha256};
+#[cfg(not(feature = "prod-proofs-age"))]
+use trusset_circuits_common::StubProof;
 use trusset_circuits_common::{
-    compute_commitment, digest_to_bytes, hash_bytes_with_tag, CircuitId, Digest, StubProof,
+    compute_commitment, digest_to_bytes, hash_bytes_with_tag, CircuitId, Digest, Felt,
     StubProofError, NONCE_LEN, PUBLIC_DIGEST_TAG,
 };
 use zeroize::Zeroize;
@@ -86,7 +101,10 @@ impl PublicInputs {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ValidateError {
     /// `dob_days > current_epoch_days` — would imply a future birth date.
-    TimeTravel { dob_days: u64, current_epoch_days: u64 },
+    TimeTravel {
+        dob_days: u64,
+        current_epoch_days: u64,
+    },
     /// `current_epoch_days - dob_days < min_age_days`. Maps to `E_AGE_BELOW_MIN`.
     BelowMinimum {
         age_days: u64,
@@ -97,11 +115,15 @@ pub enum ValidateError {
     CommitmentMismatch,
     /// `params.min_age_days` does not match `public.min_age_days`.
     MinAgeMismatch,
+    /// Winterfell prover failed (prod-proofs-age path only).
+    WinterfellProverError(String),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum VerifyError {
     StubProofMalformed(StubProofError),
+    #[cfg(feature = "prod-proofs-age")]
+    WinterfellVerifyError(verifier::AirVerifyError),
 }
 
 impl From<StubProofError> for VerifyError {
@@ -110,14 +132,19 @@ impl From<StubProofError> for VerifyError {
     }
 }
 
-/// Canonical witness serialization fed into the commitment hash:
-/// fixed 8 bytes, little-endian.
-fn witness_bytes(dob_days: u64) -> [u8; 8] {
-    dob_days.to_le_bytes()
+/// Canonical felt-encoding of the witness for the v2 commitment scheme.
+/// A 1-felt vector carrying the dob_days value as a single Goldilocks
+/// limb (fits since dob_days ≤ MAX_PLAUSIBLE_DAYS < 2^22 < 2^63).
+pub fn witness_to_felts(dob_days: u64) -> [Felt; 1] {
+    [Felt::new(dob_days)]
 }
 
 pub fn commit(witness: &Witness) -> Digest {
-    compute_commitment(&witness_bytes(witness.dob_days), &witness.nonce)
+    compute_commitment(
+        CIRCUIT_ID,
+        &witness_to_felts(witness.dob_days),
+        &witness.nonce,
+    )
 }
 
 pub fn validate(
@@ -144,33 +171,67 @@ pub fn validate(
             min_age_days: public.min_age_days,
         });
     }
-    let recomputed = compute_commitment(&witness_bytes(witness.dob_days), &witness.nonce);
+    let recomputed = compute_commitment(
+        CIRCUIT_ID,
+        &witness_to_felts(witness.dob_days),
+        &witness.nonce,
+    );
     if recomputed != public.commitment {
         return Err(ValidateError::CommitmentMismatch);
     }
     Ok(())
 }
 
-/// # Phase 2B TODO
-/// Real Winterfell AIR must enforce:
-///   1. Rescue commitment opens correctly over `(dob_days, nonce)`.
-///   2. `current_epoch_days - dob_days = age_days` (subtraction trace).
-///   3. `age_days - min_age_days = slack` with `slack >= 0` (range check
-///      via boolean decomposition over `log2(MAX_PLAUSIBLE_DAYS) ≈ 22` bits).
 pub fn prove(
     witness: &Witness,
     public: &PublicInputs,
     params: &Params,
 ) -> Result<Vec<u8>, ValidateError> {
     validate(witness, public, params)?;
-    let proof = StubProof::build(CIRCUIT_ID, public.commitment, public.digest());
-    Ok(proof.to_bytes().to_vec())
+    #[cfg(feature = "prod-proofs-age")]
+    {
+        use trusset_circuits_common::stark_options;
+        let pi = prover::public_to_air(
+            &public.commitment,
+            public.min_age_days,
+            public.current_epoch_days,
+        );
+        let seed = [0u8; 32];
+        let bytes = prover::build_proof(
+            witness.dob_days,
+            &witness.nonce,
+            public.min_age_days,
+            public.current_epoch_days,
+            &pi,
+            stark_options(),
+            &seed,
+        )
+        .map_err(|e| ValidateError::WinterfellProverError(format!("{e:?}")))?;
+        Ok(bytes)
+    }
+    #[cfg(not(feature = "prod-proofs-age"))]
+    {
+        let proof = StubProof::build(CIRCUIT_ID, public.commitment, public.digest());
+        Ok(proof.to_bytes().to_vec())
+    }
 }
 
 pub fn verify(proof_bytes: &[u8], public: &PublicInputs) -> Result<(), VerifyError> {
-    let parsed = StubProof::from_bytes(proof_bytes)?;
-    parsed.check(CIRCUIT_ID, &public.commitment, &public.digest())?;
-    Ok(())
+    #[cfg(feature = "prod-proofs-age")]
+    {
+        let pi = prover::public_to_air(
+            &public.commitment,
+            public.min_age_days,
+            public.current_epoch_days,
+        );
+        verifier::verify_proof(proof_bytes, pi).map_err(VerifyError::WinterfellVerifyError)
+    }
+    #[cfg(not(feature = "prod-proofs-age"))]
+    {
+        let parsed = StubProof::from_bytes(proof_bytes)?;
+        parsed.check(CIRCUIT_ID, &public.commitment, &public.digest())?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -323,6 +384,122 @@ mod tests {
                 age_days: 6569,
                 min_age_days: 6570,
             })
+        );
+    }
+
+    // -------------------------------------------------------------
+    // AIR-time negative-witness sweeps (Stage 6)
+    //
+    // These bypass `validate()` and call `prover::build_proof` directly
+    // with spec-violating witnesses. The 22-bit boolean range
+    // decomposition on `slack = current_epoch_days − dob_days − min_age_days`
+    // MUST cause the prover to fail before emitting a proof.
+    //
+    // Mechanism: for time-travel and underage, the "slack" value as a
+    // field element wraps to a large value (close to the Goldilocks prime)
+    // that does NOT decompose into 22 boolean bits. The AIR's
+    // linear-combination constraint (slack == Σ bit_i · 2^i) fails.
+    // -------------------------------------------------------------
+
+    #[cfg(feature = "prod-proofs-age")]
+    fn try_prove_air_only(
+        dob_days: u64,
+        min_age_days: u64,
+        current_epoch_days: u64,
+    ) -> Result<Vec<u8>, String> {
+        use trusset_circuits_common::{compute_commitment, stark_options, CircuitId, Felt};
+        let nonce = [0x22u8; NONCE_LEN];
+        let witness_felts = [Felt::new(dob_days)];
+        let commitment = compute_commitment(CircuitId::AgeThreshold, &witness_felts, &nonce);
+        let pi = prover::public_to_air(&commitment, min_age_days, current_epoch_days);
+        // Debug builds: Winterfell `debug_assert!`s panic on bad trace.
+        // Release builds: `debug_assert!`s compiled out; prover emits invalid
+        // bytes which the verifier then rejects. Chain prove+verify so the
+        // wrapper's rejection contract holds in both profiles.
+        let prove_result = std::panic::catch_unwind(|| {
+            prover::build_proof(
+                dob_days,
+                &nonce,
+                min_age_days,
+                current_epoch_days,
+                &pi,
+                stark_options(),
+                &[0u8; 32],
+            )
+        });
+        let proof_bytes = match prove_result {
+            Ok(Ok(b)) => b,
+            Ok(Err(e)) => return Err(format!("ProverError: {e:?}")),
+            Err(p) => {
+                let msg = p
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                return Err(format!("Prover panic: {msg}"));
+            }
+        };
+        let pi_verify = prover::public_to_air(&commitment, min_age_days, current_epoch_days);
+        match verifier::verify_proof(&proof_bytes, pi_verify) {
+            Ok(()) => Ok(proof_bytes),
+            Err(e) => Err(format!("VerifierError: {e:?}")),
+        }
+    }
+
+    #[cfg(feature = "prod-proofs-age")]
+    #[test]
+    fn air_rejects_time_travel() {
+        // dob_days > current_epoch_days: person hasn't been born yet.
+        // slack = current - dob - min_age wraps to a large field value
+        // that doesn't fit in 22 bits.
+        let result = try_prove_air_only(TODAY + 100, 6570, TODAY);
+        assert!(
+            result.is_err(),
+            "AIR must reject time-travel witness, got Ok"
+        );
+    }
+
+    #[cfg(feature = "prod-proofs-age")]
+    #[test]
+    fn air_rejects_underage() {
+        // dob_days = TODAY - 1000 (about 2.7 years old), min_age = 6570 (18 years).
+        // slack = -5570 wraps to large field value → bit-decomp fails.
+        let result = try_prove_air_only(TODAY - 1000, 6570, TODAY);
+        assert!(result.is_err(), "AIR must reject underage witness, got Ok");
+    }
+
+    #[cfg(feature = "prod-proofs-age")]
+    #[test]
+    fn air_rejects_one_day_short() {
+        // Boundary: exactly one day short of min_age → slack = -1 → wraps.
+        let result = try_prove_air_only(TODAY - 6569, 6570, TODAY);
+        assert!(
+            result.is_err(),
+            "AIR must reject witness one day short of min_age, got Ok"
+        );
+    }
+
+    #[cfg(feature = "prod-proofs-age")]
+    #[test]
+    fn air_accepts_exact_min_age() {
+        // Boundary: exactly min_age days old → slack = 0 → bits all 0 → accepts.
+        let result = try_prove_air_only(TODAY - 6570, 6570, TODAY);
+        assert!(
+            result.is_ok(),
+            "AIR must accept exact-min-age witness, got {:?}",
+            result.err()
+        );
+    }
+
+    #[cfg(feature = "prod-proofs-age")]
+    #[test]
+    fn air_accepts_well_over_min_age() {
+        // 30-year-old, min_age = 18 years → slack = 4380 days, fits in 22 bits.
+        let result = try_prove_air_only(TODAY - 10950, 6570, TODAY);
+        assert!(
+            result.is_ok(),
+            "AIR must accept 30-year-old witness, got {:?}",
+            result.err()
         );
     }
 }

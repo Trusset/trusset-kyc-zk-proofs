@@ -159,11 +159,7 @@ impl JobLeaf {
 }
 
 fn is_eip55_like(s: &str) -> bool {
-    s.len() == 42
-        && s.starts_with("0x")
-        && s[2..]
-            .chars()
-            .all(|c| c.is_ascii_hexdigit())
+    s.len() == 42 && s.starts_with("0x") && s[2..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn validate_hex32(field: &str, hex: &str) -> Result<()> {
@@ -286,5 +282,118 @@ mod tests {
         assert_eq!(bytes.len(), 20);
         assert_eq!(bytes[0], 0xab);
         assert_eq!(bytes[19], 0x01);
+    }
+
+    /// Pin every JSON field name on the Job / JobSubject / JobLeaf /
+    /// ListCommitment wire schema. These are consumed by the TS CLI on
+    /// the stdin side ([cli/src/jobSpec.ts](../../cli/src/jobSpec.ts)
+    /// `JobLeaf` / `JobSubject` / `Job` interfaces).
+    ///
+    /// **Why this test is load-bearing**: the TS CLI builds the Job JSON
+    /// independently from these interfaces. There is no shared schema —
+    /// drift is silent.
+    ///
+    /// Failure of this test means: an engineer renamed a Job-related
+    /// field in `job.rs` without updating `cli/src/jobSpec.ts`. To fix:
+    /// either revert the Rust rename or apply the matching rename to
+    /// the TS interface declarations AND every TS call site building a
+    /// Job (look for `cli/src/buildJob.ts`).
+    #[test]
+    fn job_json_field_names_are_pinned() {
+        let job = Job {
+            version: "2.0.0".to_string(),
+            deterministic: true,
+            epoch_days: 20587,
+            output_root: "/tmp/out".to_string(),
+            config_hash: "0x".to_string() + &"a".repeat(64),
+            skip_proofs: false,
+            subjects: vec![JobSubject {
+                subject_id: "0x0000000000000000000000000000000000000001".to_string(),
+                passthrough: serde_json::json!({"k": "v"}),
+                leaves: vec![JobLeaf {
+                    field: "firstName".to_string(),
+                    circuit: "preimage_knowledge".to_string(),
+                    value: serde_json::json!("Alice"),
+                    public: serde_json::json!({}),
+                    params_hash: "0x".to_string() + &"c".repeat(64),
+                }],
+            }],
+            list_commitments: BTreeMap::from([(
+                "country_allowlist".to_string(),
+                ListCommitment {
+                    values: vec!["DEU".to_string()],
+                    source_sha256: "0x".to_string() + &"d".repeat(64),
+                },
+            )]),
+        };
+
+        let json = serde_json::to_value(&job).unwrap();
+        let obj = json.as_object().unwrap();
+
+        let expected_job_fields = [
+            "version",
+            "deterministic",
+            "epoch_days",
+            "output_root",
+            "config_hash",
+            "skip_proofs",
+            "subjects",
+            "list_commitments",
+        ];
+        for name in &expected_job_fields {
+            assert!(
+                obj.contains_key(*name),
+                "Job JSON is missing wire field {:?} (cli/src/jobSpec.ts expects this)",
+                name
+            );
+        }
+        assert_eq!(
+            obj.len(),
+            expected_job_fields.len(),
+            "Job has {} JSON fields but {} are pinned. \
+             Add the new field to cli/src/jobSpec.ts:Job AND to expected_job_fields here.",
+            obj.len(),
+            expected_job_fields.len()
+        );
+
+        // JobSubject
+        let subject = obj["subjects"].as_array().unwrap()[0].as_object().unwrap();
+        let expected_subject_fields = ["subject_id", "passthrough", "leaves"];
+        for name in &expected_subject_fields {
+            assert!(
+                subject.contains_key(*name),
+                "JobSubject JSON is missing field {:?}",
+                name
+            );
+        }
+        assert_eq!(subject.len(), expected_subject_fields.len());
+
+        // JobLeaf
+        let leaf = subject["leaves"].as_array().unwrap()[0]
+            .as_object()
+            .unwrap();
+        let expected_leaf_fields = ["field", "circuit", "value", "public", "params_hash"];
+        for name in &expected_leaf_fields {
+            assert!(
+                leaf.contains_key(*name),
+                "JobLeaf JSON is missing field {:?}",
+                name
+            );
+        }
+        assert_eq!(leaf.len(), expected_leaf_fields.len());
+
+        // ListCommitment
+        let lc = obj["list_commitments"].as_object().unwrap()["country_allowlist"]
+            .as_object()
+            .unwrap();
+        let expected_lc_fields = ["values", "source_sha256"];
+        for name in &expected_lc_fields {
+            assert!(
+                lc.contains_key(*name),
+                "ListCommitment JSON is missing field {:?}",
+                name
+            );
+        }
+        assert_eq!(lc.len(), expected_lc_fields.len());
     }
 }
