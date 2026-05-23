@@ -31,7 +31,7 @@ The tool runs entirely on the operator's machine: all proving is local, the mast
 Requirements: Node.js 18+, Rust 1.75+ with the `wasm32-unknown-unknown` target installed.
 
 ```bash
-git clone https://github.com/Trusset/trusset-kyc-hashing.git
+git clone https://github.com/Trusset/trusset-kyc-zk-proofs
 cd trusset-kyc-hashing
 npm install                              # builds Rust workspace + WASM verifier + TS CLI
 cp config.example.json config.json
