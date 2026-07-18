@@ -307,7 +307,71 @@ fn decode_wallet(addr: &str) -> Option<[u8; 20]> {
     Some(out)
 }
 
-fn dispatch_verify(
+/// Reconstruct a circuit's typed `PublicInputs` from the manifest JSON and
+/// return its `public_digest` (`Rescue(PUBLIC_DIGEST_TAG ‖ canonical_bytes)`).
+///
+/// This mirrors, byte-for-byte, what the prover writes into
+/// `manifest.leaves[].publicDigest` (`prover/src/dispatch.rs` returns
+/// `public.digest()`). The commitment is taken from `publicInputs.commitment`
+/// so the caller can independently assert it equals `leaf.commitment`.
+pub fn dispatch_public_digest(
+    circuit_id: CircuitId,
+    public_inputs: &serde_json::Value,
+) -> Result<Digest, String> {
+    use trusset_circuit_age_threshold as age;
+    use trusset_circuit_preimage_knowledge as preimage;
+    use trusset_circuit_set_membership as set;
+    use trusset_circuit_tier_threshold as tier;
+
+    let commitment = pub_commitment(public_inputs)?;
+    let digest = match circuit_id {
+        CircuitId::PreimageKnowledge => preimage::PublicInputs { commitment }.digest(),
+        CircuitId::TierThreshold => {
+            let min_tier = pub_u64(public_inputs, "minTier")?
+                .try_into()
+                .map_err(|_| "minTier out of u8 range".to_string())?;
+            tier::PublicInputs {
+                commitment,
+                min_tier,
+            }
+            .digest()
+        }
+        CircuitId::AgeThreshold => age::PublicInputs {
+            commitment,
+            min_age_days: pub_u64(public_inputs, "minAgeDays")?,
+            current_epoch_days: pub_u64(public_inputs, "currentEpochDays")?,
+        }
+        .digest(),
+        CircuitId::SetMembership => {
+            let set_root_hex = public_inputs
+                .get("setRoot")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "set_membership.publicInputs.setRoot missing".to_string())?;
+            let set_root = hex_to_digest(set_root_hex)
+                .map_err(|_| "setRoot is not a valid digest hex".to_string())?;
+            let set_depth = pub_u64(public_inputs, "setDepth")?
+                .try_into()
+                .map_err(|_| "setDepth out of u8 range".to_string())?;
+            set::PublicInputs {
+                commitment,
+                set_root,
+                set_depth,
+            }
+            .digest()
+        }
+    };
+    Ok(digest)
+}
+
+fn pub_commitment(public_inputs: &serde_json::Value) -> Result<Digest, String> {
+    let hex = public_inputs
+        .get("commitment")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "publicInputs.commitment missing".to_string())?;
+    hex_to_digest(hex).map_err(|_| "publicInputs.commitment is not a valid digest hex".to_string())
+}
+
+pub fn dispatch_verify(
     circuit_id: CircuitId,
     commitment: &Digest,
     public_inputs: &serde_json::Value,
