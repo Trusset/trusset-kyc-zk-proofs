@@ -14,11 +14,12 @@
 //! plaintext touches the final destination.
 
 use crate::dispatch::{prove_leaf, ProvedLeaf, SecretsEntry};
-use crate::encrypt::encrypt_secrets;
+use crate::encrypt::encrypt_secrets_v2;
+use crate::entropy::fill_random;
 use crate::errors::{ErrorCode, ProverError, Result};
 use crate::job::{Job, JobSubject};
 use crate::manifest::build_manifest;
-use crate::merkle::compute_root;
+use crate::merkle::compute_root_v2;
 use crate::sign::{SigningSecret, SIGNATURE_LEN};
 use std::collections::BTreeMap;
 use std::fs;
@@ -28,7 +29,10 @@ use trusset_bundle_format::manifest::{
     canonical_disk_bytes, canonical_signing_bytes, Manifest, CREATED_AT_SENTINEL,
 };
 use trusset_circuit_set_membership as set;
-use trusset_circuits_common::{derive_subject_seed, digest_to_hex, CIRCUITS_VERSION};
+use trusset_circuits_common::{
+    derive_deterministic_subject_key, derive_subject_seed, digest_to_hex, CIRCUITS_VERSION,
+};
+use zeroize::Zeroizing;
 
 #[derive(Debug)]
 pub struct BundleReport {
@@ -37,6 +41,16 @@ pub struct BundleReport {
     pub kyc_hash_hex: String,
     pub leaf_count: usize,
     pub total_proof_bytes: usize,
+    /// Per-leaf `(field, proof_bytes, ms)` for the `leaf_proved` events
+    /// the caller streams to stdout and the audit log.
+    pub leaf_timings: Vec<LeafTiming>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LeafTiming {
+    pub field: String,
+    pub proof_bytes: usize,
+    pub ms: u64,
 }
 
 /// Build one subject's bundle and write it to disk atomically.
@@ -48,8 +62,27 @@ pub fn build_subject_bundle(
     config_hash: &[u8; 32],
     now_iso: &str,
 ) -> Result<BundleReport> {
+    // 0. Per-subject key (secretsKdfVersion 2). Deterministic runs derive
+    // it from the master key so re-runs stay byte-identical; otherwise it
+    // is drawn from OS entropy and lives only inside the wrapped
+    // `secrets.enc` blob. The master key wraps this key and derives
+    // nothing else.
+    let subject_key: Zeroizing<[u8; 32]> = if job.deterministic {
+        derive_deterministic_subject_key(
+            master_key,
+            subject.subject_id.as_bytes(),
+            job.epoch_days,
+            config_hash,
+            CIRCUITS_VERSION,
+        )
+    } else {
+        let mut k = Zeroizing::new([0u8; 32]);
+        fill_random(k.as_mut())?;
+        k
+    };
+
     let subject_seed = derive_subject_seed(
-        master_key,
+        &subject_key,
         subject.subject_id.as_bytes(),
         job.epoch_days,
         config_hash,
@@ -70,20 +103,45 @@ pub fn build_subject_bundle(
         proved.push(p);
     }
 
-    // 2. Merkle root over sorted leaf hashes.
+    // 2. Merkle root over sorted leaf hashes (v2 construction).
     let leaf_hashes: Vec<_> = proved.iter().map(|p| p.leaf_hash).collect();
-    let (root, sorted_indices) = compute_root(&leaf_hashes);
+    let (root, sorted_indices) = compute_root_v2(&leaf_hashes);
     let kyc_hash_hex = digest_to_hex(&root);
 
-    // 3. List roots needed by the manifest.
+    // 3. List roots needed by the manifest. A list-commitment file that
+    // declares a root is cross-checked against the recomputation here, so
+    // a stale committed file fails the run instead of being ignored.
     let mut list_roots: BTreeMap<String, String> = BTreeMap::new();
     for (id, lc) in job.list_commitments.iter() {
         let refs: Vec<&[u8]> = lc.values.iter().map(|s| s.as_bytes()).collect();
         if refs.is_empty() {
             continue;
         }
-        let (r, _, _) = set::build_set_tree(&refs);
-        list_roots.insert(id.clone(), digest_to_hex(&r));
+        let (r, depth, _) = set::build_set_tree(&refs);
+        let root_hex = digest_to_hex(&r);
+        if let Some(declared) = lc.declared_root.as_deref() {
+            if !declared.eq_ignore_ascii_case(&root_hex) {
+                return Err(ProverError::new(
+                    ErrorCode::Config,
+                    format!(
+                        "list '{}' declares root {} but its values recompute to {} — regenerate the file with trusset-list-commit",
+                        id, declared, root_hex
+                    ),
+                ));
+            }
+        }
+        if let Some(declared_depth) = lc.declared_depth {
+            if declared_depth != depth {
+                return Err(ProverError::new(
+                    ErrorCode::Config,
+                    format!(
+                        "list '{}' declares depth {} but its values recompute to depth {}",
+                        id, declared_depth, depth
+                    ),
+                ));
+            }
+        }
+        list_roots.insert(id.clone(), root_hex);
     }
 
     let manifest = build_manifest(
@@ -96,16 +154,19 @@ pub fn build_subject_bundle(
         &job.list_commitments,
         &list_roots,
         job.skip_proofs,
+        &job.config_hash,
     );
 
     // 4. Sign the canonical signing view (sentinel timestamp).
     let sig_payload = canonical_signing_bytes(&manifest)?;
     let signature: [u8; SIGNATURE_LEN] = signing_key.sign(&sig_payload);
 
-    // 5. Encrypt secrets blob (per-leaf value + nonce + circuit name).
+    // 5. Encrypt secrets blob (per-leaf value + nonce + circuit name)
+    // under the wrapped per-subject key.
     let secrets_json = build_secrets_blob(&proved)?;
-    let secrets_enc = encrypt_secrets(
+    let secrets_enc = encrypt_secrets_v2(
         master_key,
+        &subject_key,
         subject.subject_id.as_bytes(),
         job.epoch_days,
         config_hash,
@@ -123,12 +184,22 @@ pub fn build_subject_bundle(
         &secrets_enc,
     )?;
 
+    let leaf_timings = proved
+        .iter()
+        .map(|p| LeafTiming {
+            field: p.field.clone(),
+            proof_bytes: p.proof_bytes.len(),
+            ms: p.took_ms,
+        })
+        .collect();
+
     Ok(BundleReport {
         subject_id: subject.subject_id.clone(),
         bundle_path,
         kyc_hash_hex,
         leaf_count: proved.len(),
         total_proof_bytes: proved.iter().map(|p| p.proof_bytes.len()).sum(),
+        leaf_timings,
     })
 }
 
@@ -174,11 +245,7 @@ fn write_bundle(
 
     // proofs/<field>.bin
     for p in proved {
-        let path = tmp_dir.join(&p.field).with_extension("bin");
-        // Rebuild path as proofs/<field>.bin since the previous line drops the
-        // proofs/ prefix when the field is a single component.
         let proof_path = tmp_dir.join("proofs").join(format!("{}.bin", p.field));
-        let _ = path;
         let mut f = fs::File::create(&proof_path)?;
         f.write_all(&p.proof_bytes)?;
     }
@@ -207,6 +274,11 @@ fn write_bundle(
         fs::remove_dir_all(&final_dir)?;
     }
     fs::rename(&tmp_dir, &final_dir)?;
+
+    // Remove the staging root once it is empty. A concurrent subject may
+    // still be staging its own bundle, in which case the directory is not
+    // empty and `remove_dir` fails harmlessly.
+    let _ = fs::remove_dir(&tmp_root);
 
     Ok(final_dir)
 }

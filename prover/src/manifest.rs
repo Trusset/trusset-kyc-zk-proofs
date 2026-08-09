@@ -13,6 +13,7 @@ use trusset_bundle_format::manifest::{
     LeafEntry, ListEntry, Manifest, StarkBlock, CREATED_AT_SENTINEL, MANIFEST_VERSION,
     MODE_PRODUCTION, MODE_STUB, SECRETS_KDF_VERSION,
 };
+use trusset_bundle_format::merkle::MERKLE_VERSION_V2;
 use trusset_circuits_common::{digest_to_hex, CIRCUITS_VERSION};
 
 // Re-exports so existing call sites keep working.
@@ -31,6 +32,7 @@ pub fn build_manifest(
     list_commitments_used: &BTreeMap<String, ListCommitment>,
     list_roots: &BTreeMap<String, String>,
     skip_proofs: bool,
+    config_hash_hex: &str,
 ) -> Manifest {
     let mut leaves = Vec::with_capacity(proved_leaves.len());
     for &orig_idx in sorted_indices {
@@ -46,6 +48,8 @@ pub fn build_manifest(
             proof_digest: digest_to_hex(&p.proof_digest),
             params_hash: p.params_hash_hex.clone(),
             leaf_hash: digest_to_hex(&p.leaf_hash),
+            disclosure: Some(p.disclosure.clone()),
+            params: Some(p.manifest_params.clone()),
         });
     }
 
@@ -92,5 +96,7 @@ pub fn build_manifest(
         passthrough: subject.passthrough.clone(),
         lists,
         secrets_kdf_version: SECRETS_KDF_VERSION,
+        merkle_version: Some(MERKLE_VERSION_V2),
+        config_hash: Some(config_hash_hex.to_string()),
     }
 }

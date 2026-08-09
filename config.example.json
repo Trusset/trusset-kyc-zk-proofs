@@ -21,10 +21,10 @@
     "nationality":            { "circuit": "set_membership",      "params": { "list": "country_allowlist" } },
     "documentIssuingCountry": { "circuit": "set_membership",      "params": { "list": "country_allowlist" } },
     "investorType":           { "circuit": "tier_threshold",      "params": { "minTier": "RETAIL" } },
-    "firstName":              { "circuit": "preimage_knowledge",  "params": { "maxValueBytes": 128 } },
-    "lastName":               { "circuit": "preimage_knowledge",  "params": { "maxValueBytes": 128 } },
-    "documentType":           { "circuit": "preimage_knowledge",  "params": { "maxValueBytes": 64  } },
-    "documentNumber":         { "circuit": "preimage_knowledge",  "params": { "maxValueBytes": 64  } }
+    "firstName":              { "circuit": "commitment_only",     "params": { "maxValueBytes": 128 } },
+    "lastName":               { "circuit": "commitment_only",     "params": { "maxValueBytes": 128 } },
+    "documentType":           { "circuit": "commitment_only",     "params": { "maxValueBytes": 64  } },
+    "documentNumber":         { "circuit": "commitment_only",     "params": { "maxValueBytes": 64  } }
   },
   "tiers": {
     "NONE": 0,

@@ -50,15 +50,17 @@ PROVER_BIN="$REPO_ROOT/target/release/trusset-prover"
 [ -x "$PROVER_BIN" ] || fail "missing $PROVER_BIN — run 'cargo build --release'"
 [ -f "$REPO_ROOT/cli/dist/index.js" ] || fail "missing cli/dist/index.js — run 'cd cli && npm run build'"
 
-# ---- Build WASM artifact if missing -------------------------------------
+# ---- Build the WASM artifact --------------------------------------------
 
+# Always rebuild. A stale artifact from an earlier checkout silently turns
+# this parity gate into a comparison against yesterday's verifier, which is
+# exactly the failure this gate exists to catch.
 WASM_ARTIFACT="$REPO_ROOT/target/wasm32-unknown-unknown/release/trusset_verifier.wasm"
-if [ ! -f "$WASM_ARTIFACT" ]; then
-    log "WASM artifact missing — building"
-    cargo rustc --release --target wasm32-unknown-unknown -p trusset-verifier \
-        --features wasm --lib --crate-type=cdylib >/dev/null 2>&1 \
-        || fail "WASM build failed"
-fi
+log "building the WASM verifier (cdylib)"
+cargo rustc --release --target wasm32-unknown-unknown -p trusset-verifier \
+    --features wasm --lib --crate-type=cdylib >/dev/null 2>&1 \
+    || fail "WASM build failed"
+[ -f "$WASM_ARTIFACT" ] || fail "WASM build produced no artifact at $WASM_ARTIFACT"
 
 # ---- Generate Node-loadable WASM glue -----------------------------------
 

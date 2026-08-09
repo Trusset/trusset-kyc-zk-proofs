@@ -25,6 +25,8 @@
 #[cfg(feature = "prod-proofs-set")]
 pub mod air;
 #[cfg(feature = "prod-proofs-set")]
+pub mod air_v2;
+#[cfg(feature = "prod-proofs-set")]
 pub mod prover;
 #[cfg(feature = "prod-proofs-set")]
 pub mod verifier;
@@ -336,6 +338,23 @@ pub fn verify(proof_bytes: &[u8], public: &PublicInputs) -> Result<(), VerifyErr
     {
         let pi = prover::public_to_air(&public.commitment, &public.set_root, public.set_depth);
         verifier::verify_proof(proof_bytes, pi).map_err(VerifyError::WinterfellVerifyError)
+    }
+    #[cfg(not(feature = "prod-proofs-set"))]
+    {
+        let parsed = StubProof::from_bytes(proof_bytes)?;
+        parsed.check(CIRCUIT_ID, &public.commitment, &public.digest())?;
+        Ok(())
+    }
+}
+
+/// Verify a proof produced under the frozen circuitsVersion 2 constraint
+/// set. Existing bundles verify through this path; new issuance always
+/// uses `verify`.
+pub fn verify_v2(proof_bytes: &[u8], public: &PublicInputs) -> Result<(), VerifyError> {
+    #[cfg(feature = "prod-proofs-set")]
+    {
+        let pi = prover::public_to_air(&public.commitment, &public.set_root, public.set_depth);
+        verifier::verify_proof_v2(proof_bytes, pi).map_err(VerifyError::WinterfellVerifyError)
     }
     #[cfg(not(feature = "prod-proofs-set"))]
     {
@@ -836,6 +855,105 @@ mod tests {
         assert!(
             result.is_err(),
             "AIR must reject tampered commitment, got Ok"
+        );
+    }
+
+    /// The soundness fix (circuitsVersion 3): a prover commits to a
+    /// non-member value but tries to prove membership by grafting a real
+    /// member's Merkle walk onto its own commitment. The commitment opens
+    /// (row 44) and the walk reaches `set_root` (boundary), but the
+    /// non-member's `set_leaf` (row 89) never enters the carry chain. The
+    /// v3 carry binding rejects it; the frozen v2 AIR - which left the
+    /// carry column unconstrained - accepts it, which is the exact hole
+    /// this fix closes.
+    #[cfg(feature = "prod-proofs-set")]
+    #[test]
+    fn v3_rejects_nonmember_grafted_onto_member_walk_while_v2_accepts() {
+        use trusset_circuits_common::stark_options;
+        use winterfell::Prover;
+
+        let list = fixture_list();
+        let (member_w, member_p, _) = witness_for(&list, 0); // DEU, a real member
+        let nonmember_value: &[u8] = b"ZZZ"; // not in the fixture list
+        let nonmember_nonce = [0x7cu8; NONCE_LEN];
+
+        // Public inputs the forger presents: the non-member's own
+        // commitment, but the real set_root and depth.
+        let nonmember_commitment = compute_commitment(
+            CircuitId::SetMembership,
+            &witness_to_felts(nonmember_value),
+            &nonmember_nonce,
+        );
+
+        // Two honest traces: one opens to the non-member (its walk does
+        // NOT reach set_root), the other is the member's real inclusion.
+        let nm_trace =
+            prover::build_trace(nonmember_value, &nonmember_nonce, &member_w.merkle_path);
+        let member_trace =
+            prover::build_trace(&member_w.value, &member_w.nonce, &member_w.merkle_path);
+
+        // Graft: rows 0..MERKLE_ROW_START from the non-member (commitment +
+        // set_leaf), rows MERKLE_ROW_START.. from the member (the walk that
+        // reaches set_root). Force the witness-binding band (cols 12..24)
+        // to the non-member's witness across every row so the constancy
+        // constraint stays satisfied.
+        let width = air::TRACE_WIDTH;
+        let length = air::TRACE_LENGTH;
+        let nm_witness = witness_to_felts(nonmember_value);
+        let mut forged = winterfell::TraceTable::new(width, length);
+        for row in 0..length {
+            for col in 0..width {
+                let witness_cols =
+                    air::COL_WITNESS_START..air::COL_WITNESS_START + MAX_PADDED_WITNESS_FELTS;
+                let v = if witness_cols.contains(&col) {
+                    nm_witness[col - air::COL_WITNESS_START]
+                } else if row < air::MERKLE_ROW_START {
+                    nm_trace.get(col, row)
+                } else {
+                    member_trace.get(col, row)
+                };
+                forged.set(col, row, v);
+            }
+        }
+
+        let pi = prover::public_to_air(
+            &nonmember_commitment,
+            &member_p.set_root,
+            member_p.set_depth,
+        );
+
+        // The grafted trace has a self-consistent non-member commitment and
+        // a valid-looking walk to set_root, so an honest run produces
+        // proof bytes under both constraint sets.
+        let v3_prover = prover::SetProver::new(stark_options(), pi.clone());
+        let v2_prover = prover::SetProverV2::new(stark_options(), pi.clone());
+
+        let forged_v3 = forged.clone();
+        let v3_bytes = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            v3_prover.prove(forged_v3)
+        }));
+        let forged_v2 = forged.clone();
+        let v2_bytes = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            v2_prover.prove(forged_v2)
+        }));
+
+        // v3: the carry binding fails the forged trace. In debug builds the
+        // prover panics on the boundary/transition assertion; in release it
+        // emits bytes the verifier rejects. Either way, no accepted proof.
+        let v3_accepted = matches!(&v3_bytes, Ok(Ok(p))
+            if verifier::verify_proof(&p.to_bytes(), pi.clone()).is_ok());
+        assert!(
+            !v3_accepted,
+            "circuitsVersion 3 AIR must reject a non-member grafted onto a member walk"
+        );
+
+        // v2: the frozen AIR leaves the carry unconstrained, so the forged
+        // trace verifies - this is the documented pre-v2.1 soundness gap.
+        let v2_accepted = matches!(&v2_bytes, Ok(Ok(p))
+            if verifier::verify_proof_v2(&p.to_bytes(), pi.clone()).is_ok());
+        assert!(
+            v2_accepted,
+            "frozen circuitsVersion 2 AIR is expected to accept the forgery (the gap v3 closes)"
         );
     }
 

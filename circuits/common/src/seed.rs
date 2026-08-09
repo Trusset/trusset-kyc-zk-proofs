@@ -1,14 +1,25 @@
 //! Deterministic seed derivation (plan §"Determinism", spec §12.8).
 //!
-//! All randomness in the prover flows from `TRUSSET_KYC_MASTER_KEY` through
-//! HKDF-SHA256. The prover never reads OS entropy directly; in determinism
-//! mode any attempt to do so panics (see `prover/Cargo.toml` getrandom hook).
+//! Since v2.1.0 (`secretsKdfVersion: 2`) every per-subject secret flows
+//! from an independent 32-byte `subject_key` rather than from the master
+//! key directly. Under `security.deterministic: true` the subject key is
+//! itself HKDF-derived from the master key so re-runs stay byte-identical;
+//! under `deterministic: false` it is drawn from OS entropy in the prover
+//! (see `prover/src/entropy.rs`, which panics on any draw when
+//! `TRUSSET_KYC_DETERMINISTIC=1`). The master key wraps the subject key
+//! inside `secrets.enc` and derives nothing else.
 //!
-//! Two derivation steps:
+//! Derivation steps:
 //!
 //! ```text
-//! subject_seed = HKDF-SHA256(
+//! subject_key = HKDF-SHA256(                     (deterministic mode only)
 //!   ikm  = master_key,
+//!   salt = "trusset-kyc-v2/subject-key",
+//!   info = subject_id || epoch_days_le8 || config_hash || circuits_version_le4
+//! )
+//!
+//! subject_seed = HKDF-SHA256(
+//!   ikm  = subject_key,
 //!   salt = "trusset-kyc-v2/subject",
 //!   info = subject_id || epoch_days_le8 || config_hash || circuits_version_le4
 //! )
@@ -16,7 +27,7 @@
 //! leaf_seed = HKDF-SHA256(
 //!   ikm  = subject_seed,
 //!   salt = "trusset-kyc-v2/leaf",
-//!   info = field_name || circuit_id_byte || params_hash
+//!   info = leaf_name || circuit_id_byte || params_hash
 //! )
 //! ```
 
@@ -27,6 +38,7 @@ use zeroize::Zeroizing;
 pub const MASTER_KEY_LEN: usize = 32;
 pub const SEED_LEN: usize = 32;
 
+const SALT_SUBJECT_KEY: &[u8] = b"trusset-kyc-v2/subject-key";
 const SALT_SUBJECT: &[u8] = b"trusset-kyc-v2/subject";
 const SALT_LEAF: &[u8] = b"trusset-kyc-v2/leaf";
 const SALT_PROVER: &[u8] = b"trusset-kyc-v2/prover";
@@ -36,7 +48,33 @@ const SALT_PROVER: &[u8] = b"trusset-kyc-v2/prover";
 /// Winterfell prover sees — no OS randomness, no time-of-day.
 pub const PROVER_SEED_INFO: &[u8] = b"prover-seed";
 
+/// Derive the deterministic 32-byte per-subject key (`secretsKdfVersion: 2`,
+/// `security.deterministic: true`). Under `deterministic: false` the prover
+/// draws the subject key from OS entropy instead. Auto-zeroed on drop.
+pub fn derive_deterministic_subject_key(
+    master_key: &[u8; MASTER_KEY_LEN],
+    subject_id: &[u8],
+    epoch_days: u64,
+    config_hash: &[u8; 32],
+    circuits_version: u32,
+) -> Zeroizing<[u8; SEED_LEN]> {
+    let mut info = Vec::with_capacity(subject_id.len() + 8 + 32 + 4);
+    info.extend_from_slice(subject_id);
+    info.extend_from_slice(&epoch_days.to_le_bytes());
+    info.extend_from_slice(config_hash);
+    info.extend_from_slice(&circuits_version.to_le_bytes());
+
+    let hk = Hkdf::<Sha256>::new(Some(SALT_SUBJECT_KEY), master_key);
+    let mut out = Zeroizing::new([0u8; SEED_LEN]);
+    hk.expand(&info, out.as_mut())
+        .expect("HKDF-SHA256 expand to 32 bytes is infallible");
+    out
+}
+
 /// Derive the 32-byte per-subject seed. Auto-zeroed on drop.
+/// Since `secretsKdfVersion: 2` the ikm is the per-subject key rather than
+/// the master key; the parameter keeps its historical name because the v1
+/// decrypt path still calls it with the master key directly.
 pub fn derive_subject_seed(
     master_key: &[u8; MASTER_KEY_LEN],
     subject_id: &[u8],
@@ -199,6 +237,29 @@ mod tests {
         // STARK PRNG seed would leak the commitment randomness through the
         // FRI transcript.
         assert_ne!(prov.as_ref(), leaf.as_ref());
+    }
+
+    #[test]
+    fn subject_key_is_deterministic() {
+        let a = derive_deterministic_subject_key(&master(), b"0xA", 20587, &config_hash(), 1);
+        let b = derive_deterministic_subject_key(&master(), b"0xA", 20587, &config_hash(), 1);
+        assert_eq!(a.as_ref(), b.as_ref());
+    }
+
+    #[test]
+    fn subject_key_differs_from_subject_seed() {
+        let key = derive_deterministic_subject_key(&master(), b"0xA", 20587, &config_hash(), 1);
+        let seed = derive_subject_seed(&master(), b"0xA", 20587, &config_hash(), 1);
+        assert_ne!(key.as_ref(), seed.as_ref());
+    }
+
+    #[test]
+    fn subject_key_changes_per_subject_and_epoch() {
+        let a = derive_deterministic_subject_key(&master(), b"0xA", 20587, &config_hash(), 1);
+        let b = derive_deterministic_subject_key(&master(), b"0xB", 20587, &config_hash(), 1);
+        let c = derive_deterministic_subject_key(&master(), b"0xA", 20588, &config_hash(), 1);
+        assert_ne!(a.as_ref(), b.as_ref());
+        assert_ne!(a.as_ref(), c.as_ref());
     }
 
     #[test]

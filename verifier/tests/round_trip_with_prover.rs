@@ -11,7 +11,7 @@ use trusset_prover::{
     job::{Job, JobLeaf, JobSubject, ListCommitment},
     sign::SigningSecret,
 };
-use trusset_verifier::{verify_bundle, VerifyOptions};
+use trusset_verifier::{verify_bundle, VerifyAnchors, VerifyOptions};
 
 fn master_key() -> [u8; 32] {
     let mut m = [0u8; 32];
@@ -30,8 +30,36 @@ fn now_iso() -> &'static str {
     "2026-05-14T09:12:33Z"
 }
 
-fn pad_hex64(short: &str) -> String {
-    format!("0x{:0>1$}", short.trim_start_matches("0x"), 64)
+/// Real `Params::hash()` values. The verifier recomputes `paramsHash` from
+/// each leaf's recorded parameters, so fixtures must carry the genuine
+/// hashes rather than placeholders.
+fn hex32(bytes: [u8; 32]) -> String {
+    let mut s = String::from("0x");
+    for b in bytes.iter() {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
+}
+
+fn preimage_params_hash(max_value_bytes: usize) -> String {
+    hex32(trusset_circuit_preimage_knowledge::Params { max_value_bytes }.hash())
+}
+
+fn age_params_hash(min_age_days: u64) -> String {
+    hex32(trusset_circuit_age_threshold::Params { min_age_days }.hash())
+}
+
+fn tier_params_hash(min_tier: u8) -> String {
+    hex32(trusset_circuit_tier_threshold::Params { min_tier }.hash())
+}
+
+fn set_params_hash(list_id: &str) -> String {
+    hex32(
+        trusset_circuit_set_membership::Params {
+            list_id: list_id.to_string(),
+        }
+        .hash(),
+    )
 }
 
 fn fixture_job(out: &str) -> Job {
@@ -41,28 +69,36 @@ fn fixture_job(out: &str) -> Job {
             circuit: "preimage_knowledge".into(),
             value: serde_json::json!("Alice"),
             public: serde_json::json!({}),
-            params_hash: pad_hex64("aa"),
+            params_hash: preimage_params_hash(128),
+            disclosure: None,
+            params: None,
         },
         JobLeaf {
             field: "dateOfBirth".into(),
             circuit: "age_threshold".into(),
             value: serde_json::json!("1985-04-12"),
             public: serde_json::json!({"min_age_days": 6570u64}),
-            params_hash: pad_hex64("bb"),
+            params_hash: age_params_hash(6570),
+            disclosure: None,
+            params: None,
         },
         JobLeaf {
             field: "investorType".into(),
             circuit: "tier_threshold".into(),
             value: serde_json::json!("PROFESSIONAL"),
             public: serde_json::json!({"min_tier": 1u64}),
-            params_hash: pad_hex64("cc"),
+            params_hash: tier_params_hash(1),
+            disclosure: None,
+            params: None,
         },
         JobLeaf {
             field: "country".into(),
             circuit: "set_membership".into(),
             value: serde_json::json!("DEU"),
             public: serde_json::json!({"list_id": "country_allowlist"}),
-            params_hash: pad_hex64("dd"),
+            params_hash: set_params_hash("country_allowlist"),
+            disclosure: None,
+            params: None,
         },
     ];
     let subject = JobSubject {
@@ -76,6 +112,8 @@ fn fixture_job(out: &str) -> Job {
         ListCommitment {
             values: vec!["DEU".into(), "FRA".into(), "USA".into(), "GBR".into()],
             source_sha256: "fixture-hash".into(),
+            declared_root: None,
+            declared_depth: None,
         },
     );
     Job {
@@ -113,7 +151,10 @@ fn verifier_accepts_a_real_bundle_in_permissive_mode() {
     let report = verify_bundle(
         &bundle_path,
         &VerifyOptions {
-            expected_public_key: pk,
+            anchors: VerifyAnchors {
+                expected_public_key: Some(pk),
+                expected_root: None,
+            },
             accept_stub: true,
         },
     )
@@ -153,7 +194,10 @@ fn strict_mode_rejects_stub_bundle() {
     let report = verify_bundle(
         &bundle_path,
         &VerifyOptions {
-            expected_public_key: pk,
+            anchors: VerifyAnchors {
+                expected_public_key: Some(pk),
+                expected_root: None,
+            },
             accept_stub: false,
         },
     )
@@ -174,7 +218,10 @@ fn verifier_rejects_wrong_public_key() {
     let report = verify_bundle(
         &bundle_path,
         &VerifyOptions {
-            expected_public_key: bad,
+            anchors: VerifyAnchors {
+                expected_public_key: Some(bad),
+                expected_root: None,
+            },
             accept_stub: true,
         },
     )
@@ -197,7 +244,10 @@ fn verifier_rejects_tampered_proof_byte() {
     let report = verify_bundle(
         &bundle_path,
         &VerifyOptions {
-            expected_public_key: pk,
+            anchors: VerifyAnchors {
+                expected_public_key: Some(pk),
+                expected_root: None,
+            },
             accept_stub: true,
         },
     )
@@ -241,7 +291,10 @@ fn verifier_rejects_tampered_manifest_field() {
     let report = verify_bundle(
         &bundle_path,
         &VerifyOptions {
-            expected_public_key: pk,
+            anchors: VerifyAnchors {
+                expected_public_key: Some(pk),
+                expected_root: None,
+            },
             accept_stub: true,
         },
     )
@@ -259,7 +312,10 @@ fn verifier_rejects_missing_kyc_hash_file() {
     let report = verify_bundle(
         &bundle_path,
         &VerifyOptions {
-            expected_public_key: pk,
+            anchors: VerifyAnchors {
+                expected_public_key: Some(pk),
+                expected_root: None,
+            },
             accept_stub: true,
         },
     )
@@ -288,7 +344,10 @@ fn verifier_rejects_swapped_circuit_id() {
     let report = verify_bundle(
         &bundle_path,
         &VerifyOptions {
-            expected_public_key: pk,
+            anchors: VerifyAnchors {
+                expected_public_key: Some(pk),
+                expected_root: None,
+            },
             accept_stub: true,
         },
     )
@@ -327,7 +386,10 @@ fn verifier_rejects_swapped_set_root() {
     let report = verify_bundle(
         &bundle_path,
         &VerifyOptions {
-            expected_public_key: pk,
+            anchors: VerifyAnchors {
+                expected_public_key: Some(pk),
+                expected_root: None,
+            },
             accept_stub: true,
         },
     )
@@ -363,7 +425,10 @@ fn verifier_rejects_list_root_swap_via_public_digest_drift() {
     let report = verify_bundle(
         &bundle_path,
         &VerifyOptions {
-            expected_public_key: pk,
+            anchors: VerifyAnchors {
+                expected_public_key: Some(pk),
+                expected_root: None,
+            },
             accept_stub: true,
         },
     )
@@ -375,7 +440,10 @@ fn verifier_rejects_list_root_swap_via_public_digest_drift() {
 #[test]
 fn verifier_handles_missing_bundle_directory() {
     let opts = VerifyOptions {
-        expected_public_key: [0u8; 32],
+        anchors: VerifyAnchors {
+            expected_public_key: Some([0u8; 32]),
+            expected_root: None,
+        },
         accept_stub: true,
     };
     let result = verify_bundle(Path::new("/tmp/this/does/not/exist"), &opts);

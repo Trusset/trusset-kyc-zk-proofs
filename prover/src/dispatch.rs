@@ -10,6 +10,9 @@ use crate::job::{JobLeaf, JobSubject, ListCommitment};
 use crate::leaf::{compute_leaf_hash, compute_proof_digest};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use trusset_bundle_format::manifest::{
+    DISCLOSURE_COMMITMENT_ONLY, DISCLOSURE_PLAINTEXT, DISCLOSURE_PREDICATE,
+};
 use trusset_circuit_age_threshold as age;
 use trusset_circuit_preimage_knowledge as preimage;
 use trusset_circuit_set_membership as set;
@@ -29,6 +32,12 @@ pub struct ProvedLeaf {
     /// JSON-typed public-inputs block for `manifest.leaves[].publicInputs`.
     pub manifest_public_inputs: serde_json::Value,
     pub params_hash_hex: String,
+    /// Resolved predicate parameters for `manifest.leaves[].params`, so a
+    /// verifier reads the asserted thresholds from the bundle rather than
+    /// from a config file it does not have.
+    pub manifest_params: serde_json::Value,
+    /// `plaintext` | `predicate` | `commitment_only`.
+    pub disclosure: String,
     /// Raw witness fields preserved for `secrets.enc` (zeroed on drop).
     pub plaintext_value: Zeroizing<String>,
     pub nonce: Zeroizing<[u8; 32]>,
@@ -65,12 +74,19 @@ pub fn prove_leaf(
 
     let plaintext_value = leaf_value_as_string(&leaf.value)?;
     let wallet_bytes = subject.wallet_bytes()?;
+    let commitment_only = leaf.disclosure.as_deref() == Some(DISCLOSURE_COMMITMENT_ONLY);
 
-    let (commitment, public_digest, manifest_public_inputs, mut proof_bytes) = match circuit_id {
-        CircuitId::PreimageKnowledge => prove_preimage(leaf, &plaintext_value, &nonce)?,
-        CircuitId::TierThreshold => prove_tier(leaf, &plaintext_value, &nonce)?,
-        CircuitId::AgeThreshold => prove_age(leaf, &plaintext_value, &nonce, epoch_days)?,
-        CircuitId::SetMembership => prove_set(leaf, &plaintext_value, &nonce, list_commitments)?,
+    let (commitment, public_digest, manifest_public_inputs, mut proof_bytes) = if commitment_only {
+        commit_only(&plaintext_value, &nonce)?
+    } else {
+        match circuit_id {
+            CircuitId::PreimageKnowledge => prove_preimage(leaf, &plaintext_value, &nonce)?,
+            CircuitId::TierThreshold => prove_tier(leaf, &plaintext_value, &nonce)?,
+            CircuitId::AgeThreshold => prove_age(leaf, &plaintext_value, &nonce, epoch_days)?,
+            CircuitId::SetMembership => {
+                prove_set(leaf, &plaintext_value, &nonce, list_commitments)?
+            }
+        }
     };
 
     // `--skip-proofs` mode: replace the binding placeholder proof with a
@@ -92,6 +108,9 @@ pub fn prove_leaf(
         &proof_digest,
     );
 
+    let disclosure = resolve_disclosure(leaf, circuit_id);
+    let manifest_params = resolve_manifest_params(leaf, circuit_id, &manifest_public_inputs);
+
     Ok(ProvedLeaf {
         field: leaf.field.clone(),
         circuit_id,
@@ -102,10 +121,77 @@ pub fn prove_leaf(
         leaf_hash,
         manifest_public_inputs,
         params_hash_hex: format!("0x{}", hex::encode(params_hash)),
+        manifest_params,
+        disclosure,
         plaintext_value: Zeroizing::new(plaintext_value),
         nonce,
         took_ms: start.elapsed().as_millis() as u64,
     })
+}
+
+/// Disclosure class for a leaf: explicit from the job spec when the CLI
+/// supplied one, else the per-circuit default (`predicate` for the three
+/// predicate circuits, `commitment_only` semantics only ever arrive
+/// explicitly).
+fn resolve_disclosure(leaf: &JobLeaf, circuit_id: CircuitId) -> String {
+    if let Some(d) = leaf.disclosure.as_deref() {
+        if d == DISCLOSURE_PLAINTEXT || d == DISCLOSURE_PREDICATE || d == DISCLOSURE_COMMITMENT_ONLY
+        {
+            return d.to_string();
+        }
+    }
+    match circuit_id {
+        CircuitId::PreimageKnowledge => DISCLOSURE_PREDICATE.to_string(),
+        _ => DISCLOSURE_PREDICATE.to_string(),
+    }
+}
+
+/// Resolved predicate parameters recorded in the manifest. The CLI sends
+/// them explicitly; the fallback mirrors the values already present in
+/// `publicInputs` so a v2.1 manifest always carries them.
+fn resolve_manifest_params(
+    leaf: &JobLeaf,
+    circuit_id: CircuitId,
+    public_inputs: &serde_json::Value,
+) -> serde_json::Value {
+    if let Some(p) = leaf.params.clone() {
+        return p;
+    }
+    match circuit_id {
+        CircuitId::AgeThreshold => serde_json::json!({
+            "minAgeDays": public_inputs.get("minAgeDays").cloned().unwrap_or(serde_json::Value::Null),
+        }),
+        CircuitId::TierThreshold => serde_json::json!({
+            "minTier": public_inputs.get("minTier").cloned().unwrap_or(serde_json::Value::Null),
+        }),
+        CircuitId::SetMembership => serde_json::json!({
+            "listId": public_inputs.get("listId").cloned().unwrap_or(serde_json::Value::Null),
+        }),
+        CircuitId::PreimageKnowledge => serde_json::json!({
+            "maxValueBytes": preimage::Params::default().max_value_bytes,
+        }),
+    }
+}
+
+/// `commitment_only` leaf mode: produce the hiding Rescue commitment and
+/// the preimage-shaped public digest, with a zero-length sentinel in place
+/// of a STARK. The leaf still participates identically in leaf hashing and
+/// the Merkle root; only the AIR proof is absent.
+fn commit_only(
+    value_str: &str,
+    nonce: &[u8; 32],
+) -> Result<(Digest, Digest, serde_json::Value, Vec<u8>)> {
+    let value_bytes = nfc_bytes(value_str);
+    let witness = preimage::Witness {
+        value: value_bytes,
+        nonce: *nonce,
+    };
+    let commitment = preimage::commit(&witness);
+    let public = preimage::PublicInputs { commitment };
+    let manifest_pub = serde_json::json!({
+        "commitment": digest_to_hex(&commitment),
+    });
+    Ok((commitment, public.digest(), manifest_pub, Vec::new()))
 }
 
 fn parse_circuit_id(name: &str) -> Result<CircuitId> {

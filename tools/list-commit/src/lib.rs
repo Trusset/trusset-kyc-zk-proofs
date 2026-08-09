@@ -29,7 +29,7 @@ pub struct ListCommitmentFile {
 }
 
 pub const SCHEMA_VERSION: u32 = 1;
-pub const GENERATOR_VERSION: &str = "trusset-list-commit 2.0.0";
+pub const GENERATOR_VERSION: &str = "trusset-list-commit 2.1.0";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CommitError {

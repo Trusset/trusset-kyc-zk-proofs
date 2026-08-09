@@ -14,17 +14,20 @@ trusset-kyc-hashing/
 │   ├── preimage_knowledge/
 │   ├── tier_threshold/
 │   ├── age_threshold/
-│   └── set_membership/
+│   └── set_membership/       # air.rs is circuitsVersion 3; air_v2.rs is the
+│                             # frozen pre-v2.1 AIR kept for older bundles
 │
 ├── bundle-format/            # Manifest schema, leaf/merkle, ed25519 verify
 │                             # WASM-compatible (no std::fs). Consumed by both
 │                             # prover and verifier.
 │
 ├── prover/                   # `trusset-prover` binary + library
-│   ├── src/main.rs           # stdin → NDJSON events on stdout
+│   ├── src/main.rs           # stdin → NDJSON events on stdout; --rekey-subject
 │   ├── src/job.rs            # Job spec schema
-│   ├── src/dispatch.rs       # Per-leaf circuit routing
-│   ├── src/encrypt.rs        # xsalsa20-poly1305 for secrets.enc
+│   ├── src/dispatch.rs       # Per-leaf circuit routing + commitment_only mode
+│   ├── src/encrypt.rs        # xsalsa20-poly1305 for secrets.enc (v1 + v2 layouts)
+│   ├── src/entropy.rs        # Guarded OS entropy; refuses under determinism
+│   ├── src/rekey.rs          # Per-subject master-key rotation, no re-proving
 │   ├── src/sign.rs           # ed25519 signing helpers
 │   └── src/bundle.rs         # Atomic per-subject directory writer
 │
@@ -36,6 +39,8 @@ trusset-kyc-hashing/
 │
 ├── tools/list-commit/        # `trusset-list-commit` binary
 │                             # Builds list_commitments JSON from plain text source
+│
+├── scripts/rebuild-wasm.sh   # Reproducible WASM build for counterparty vendoring
 │
 ├── cli/                      # TypeScript CLI (the operator-facing entry point)
 │   ├── src/index.ts          # Commander wiring
@@ -54,12 +59,15 @@ trusset-kyc-hashing/
 │
 ├── tests/
 │   ├── e2e/canary.sh         # Determinism canary
+│   ├── e2e/wasm_parity.sh    # Native vs WASM VerifyReport byte-equality
+│   ├── e2e/v21_matrix.sh     # Eight-scenario end-to-end matrix
+│   ├── fixtures/             # A real v2.0.0 manifest, for back-compat tests
 │   └── kat/                  # Cross-language Known-Answer Test fixtures
 │
 └── docs/                     # This directory
 ```
 
-## Data flow — `npm start`
+## Data flow - `npm start`
 
 ```
 ┌─────────────────┐
@@ -120,14 +128,15 @@ trusset-kyc-hashing/
 Exit codes: 0 all passed, 2 partial (≥1 success + ≥1 failure), 1
 batch-aborted (no successes).
 
-## Data flow — `npm run verify -- <wallet>`
+## Data flow - `npm run verify -- <wallet>`
 
 ```
 ┌─────────────────────────────┐
 │ cli/src/verify.ts           │  1. spawn trusset-verifier-cli
 │   --bundle path             │     --bundle output/<wallet>
-│   --public-key <hex>        │     --public-key <op pinned key>
-│   [--strict]                │     [--strict]
+│   [--root <0x64-hex>]       │     at least one anchor is required;
+│   [--public-key <hex>]      │     neither is a usage error (64)
+│   [--accept-stub]           │
 └────────┬────────────────────┘
          │
          ▼
@@ -139,13 +148,20 @@ batch-aborted (no successes).
          ▼
 ┌─────────────────────────────┐
 │ verifier::verify_loaded     │  3. Run every check independently:
-│                             │       a. layout_ok
-│                             │       b. mode_acceptable (vs --strict)
+│                             │       a. layout_ok + version accepted
+│                             │          (2.0.0 or 2.1.0)
+│                             │       b. mode_acceptable
 │                             │       c. kycHash.hex matches manifest
-│                             │       d. signature_valid (sentinel view)
-│                             │       e. per-leaf: proofDigest, circuit
-│                             │          verify, leafHash recompute
-│                             │       f. merkle root recompute
+│                             │       d. signature_valid, if a key was
+│                             │          supplied
+│                             │       e. root_anchor_valid, if a root
+│                             │          was supplied
+│                             │       f. per-leaf: paramsHash recompute,
+│                             │          proofDigest, empty-proof policy,
+│                             │          circuit verify (AIR selected by
+│                             │          circuitsVersion), leafHash
+│                             │       g. merkle root recompute under
+│                             │          manifest.merkleVersion
 └────────┬────────────────────┘
          │
          ▼ JSON VerifyReport
@@ -155,7 +171,53 @@ batch-aborted (no successes).
 └─────────────────────────────┘
 ```
 
-Exit codes: 0 pass, 2 fail (signature or proof check), 66 unreadable.
+`overall_pass` requires every supplied anchor to hold, plus every check
+above. A bundle verified against no anchor never passes: internal
+self-consistency is something an adversary who rewrote the whole bundle
+can also produce.
+
+Exit codes: 0 pass, 2 fail, 64 usage error, 66 unreadable bundle.
+
+## Bundle artifact contract
+
+The output shape consumed by the Trusset issuer backend and the issuer
+app. Every v2.1 addition is optional-with-omission so v2.0.0 bundles keep
+parsing and keep their signatures valid.
+
+```
+output/
+├── audit.log                       NDJSON, one line per run event
+├── kyc_hashes_<timestamp>.csv      walletAddress,country,investorType,
+│                                   softExpiryDays,hardExpiryDays,kycHash,index
+├── failures.csv                    walletAddress,stage,errorCode,message
+└── <walletAddress>/
+    ├── kycHash.hex                 0x + 64 hex, no trailing newline
+    ├── manifest.json               canonical JSON, sorted keys, 2-space indent
+    ├── manifest.sig                raw 64-byte ed25519 signature
+    ├── secrets.enc                 version byte + wrapped subject key + payload
+    └── proofs/<leafName>.bin       one per leaf; zero-length for
+                                    commitment_only and for stub bundles
+```
+
+Manifest fields, with the v2.1 additions marked:
+
+| Field | Level | v2.1 | Notes |
+|---|---|---|---|
+| `version` | top | | `2.0.0` or `2.1.0` |
+| `mode` | top | | `production` or `stub` |
+| `walletAddress`, `kycHash`, `epochDays`, `createdAt`, `deterministic`, `circuitsVersion`, `stark`, `leaves`, `secretsKdfVersion` | top | | unchanged |
+| `passthrough`, `lists` | top | | unchanged, `#[serde(default)]` |
+| `merkleVersion` | top | new | absent means 1 |
+| `configHash` | top | new | the config hash folded into the KDF chain |
+| `fieldName`, `circuit`, `circuitId`, `commitment`, `publicInputs`, `publicDigest`, `proofPath`, `proofDigest`, `paramsHash`, `leafHash` | leaf | | unchanged, all required |
+| `disclosure` | leaf | new | `plaintext`, `predicate`, `commitment_only` |
+| `params` | leaf | new | resolved predicate parameters |
+
+`fieldName` is the leaf name, which equals the source field for a
+single-instance predicate and carries a params-derived suffix
+(`dateOfBirth@7665d`) for additional instances. `proofPath` is always
+`proofs/<fieldName>.bin`; the issuer app keys uploaded proofs by that
+basename, so the two must stay in step.
 
 ## Library choices
 
@@ -167,7 +229,7 @@ Exit codes: 0 pass, 2 fail (signature or proof check), 66 unreadable.
 | **ed25519-dalek 2.x** | Standard, well-audited. Deterministic RFC 8032 signatures so bundles are byte-stable across runs |
 | **xsalsa20-poly1305** (RustCrypto) | Wire-compatible with libsodium `crypto_secretbox`. Pure Rust, no C dependency, WASM-friendly |
 | **HKDF-SHA256** | RFC 5869, the standard KDF. Used for both per-subject and per-leaf seed derivation |
-| **`serde_json` (default features)** | `BTreeMap`-backed `Map` gives sorted JSON keys automatically — no `preserve_order` anywhere in the workspace, no manual canonicalization needed |
+| **`serde_json` (default features)** | `BTreeMap`-backed `Map` gives sorted JSON keys automatically - no `preserve_order` anywhere in the workspace, no manual canonicalization needed |
 | **Hand-rolled CLI parsers** in Rust binaries | Both `trusset-prover` and `trusset-verifier-cli` use `std::env::args` directly. Avoids `clap`'s 40+ transitive deps and keeps each binary < 350 KB |
 | **Commander.js in TS** | Used in v1; preserved to keep the CLI verb surface identical |
 | **node:test** | Node 18+ built-in test runner. Zero dev-dep cost for the TS unit tests |
@@ -219,7 +281,7 @@ Explicitly avoided: Plonky3 (different field/security trade-off), Halo2
 ```
 {"event":"start","subjects":10}
 {"event":"subject_start","subject_id":"0xAbCd..."}
-{"event":"leaf_proved","subject_id":"...","field":"dateOfBirth","proof_bytes":120,"ms":1}
+{"event":"leaf_proved","subject_id":"...","field":"dateOfBirth","proof_bytes":21264,"ms":198}
 {"event":"subject_done","subject_id":"...","bundle_path":"output/0xAbCd..."}
 {"event":"subject_failed","subject_id":"...","error_code":"E_AGE_BELOW_MIN","message":"..."}
 {"event":"done","ok":9,"failed":1}
@@ -230,9 +292,9 @@ Explicitly avoided: Plonky3 (different field/security trade-off), Halo2
 
 **Env vars** the TS layer forwards under canonical names regardless of
 what the operator's config calls them:
-- `TRUSSET_KYC_MASTER_KEY` — 32-byte hex
-- `TRUSSET_KYC_SIGNING_KEY` — 32-byte hex
-- `RUST_BACKTRACE=0` — pinned to keep stderr concise
+- `TRUSSET_KYC_MASTER_KEY` - 32-byte hex
+- `TRUSSET_KYC_SIGNING_KEY` - 32-byte hex
+- `RUST_BACKTRACE=0` - pinned to keep stderr concise
 
 ## Determinism boundary
 
@@ -247,10 +309,18 @@ Two such runs produce byte-identical bundles modulo
 is the operational check.
 
 What about `getrandom`? The prover binary opts into a custom
-`getrandom` hook (Cargo feature `["custom"]`) that panics on any OS
-entropy draw when `TRUSSET_KYC_DETERMINISTIC=1` is set. CI runs with
-this flag — any code path that accidentally introduces nondeterminism
-aborts loudly rather than silently producing a different bundle.
+guarded entropy module,
+[`prover/src/entropy.rs`](../prover/src/entropy.rs), which is the only
+path to OS randomness in the prover. It refuses to draw when
+`TRUSSET_KYC_DETERMINISTIC=1` is set, returning
+`E_DETERMINISM_VIOLATION`. The TS CLI exports that variable for the child
+process whenever `security.deterministic` is true, and CI sets it too, so
+a deterministic run that reaches for randomness aborts loudly rather than
+silently producing a different bundle.
+
+Under `--no-deterministic` the per-subject key is drawn from OS entropy,
+the variable is not exported, and `"deterministic": false` is stamped into
+the manifest.
 
 ## Atomicity
 
@@ -259,9 +329,10 @@ to `output/<wallet>/` only after the manifest is signed. A crashed
 proof leaves nothing visible in `output/`. Implementation:
 [`prover/src/bundle.rs`](../prover/src/bundle.rs).
 
-Caveat: the parent `.tmp/` directory persists across runs as an empty
-shell. Harmless but a known cosmetic. Flagged for cleanup in a future
-phase.
+The staging root is removed once the rename completes and it is empty, so
+no `.tmp/` shell is left behind. A concurrent subject still staging its
+own bundle simply keeps the directory non-empty and the removal is a
+no-op.
 
 ## Build flow
 
@@ -269,14 +340,14 @@ phase.
 `npm run build`):
 
 1. Check `cargo` is on PATH. Fatal with a clear message if not.
-2. `cargo build --release --workspace` — produces native binaries:
+2. `cargo build --release --workspace` - produces native binaries:
    `target/release/trusset-prover`, `trusset-verifier-cli`,
    `trusset-list-commit`.
 3. If `wasm32-unknown-unknown` target is installed:
    `cargo build --release --target wasm32-unknown-unknown -p trusset-verifier --features wasm`
-   — produces `target/wasm32-unknown-unknown/release/trusset_verifier.wasm`
+   - produces `target/wasm32-unknown-unknown/release/trusset_verifier.wasm`
    (≈325 KB).
-4. `cd cli && npm install --ignore-scripts && tsc` — produces
+4. `cd cli && npm install --ignore-scripts && tsc` - produces
    `cli/dist/*.js`.
 
 The Rust workspace pins the toolchain via `rust-toolchain.toml`; the TS

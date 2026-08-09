@@ -6,7 +6,18 @@ export type CircuitName =
   | 'preimage_knowledge'
   | 'tier_threshold'
   | 'age_threshold'
-  | 'set_membership';
+  | 'set_membership'
+  | 'commitment_only';
+
+/**
+ * Per-leaf disclosure class recorded in `manifest.leaves[].disclosure`.
+ * `plaintext` marks a field whose value is also disclosed outside the zk
+ * layer (batch index CSV and manifest passthrough), so the proof does not
+ * hide it in the default pipeline. `predicate` marks a field where only
+ * the predicate outcome is meaningful to a counterparty. `commitment_only`
+ * marks a hiding commitment with no STARK.
+ */
+export type Disclosure = 'plaintext' | 'predicate' | 'commitment_only';
 
 // =================== predicate parameters ===================
 
@@ -31,9 +42,27 @@ export type PredicateSpec =
   | { circuit: 'preimage_knowledge'; params?: PreimageParams }
   | { circuit: 'tier_threshold'; params: TierParams }
   | { circuit: 'age_threshold'; params: AgeParams }
-  | { circuit: 'set_membership'; params: SetMembershipParams };
+  | { circuit: 'set_membership'; params: SetMembershipParams }
+  | { circuit: 'commitment_only'; params?: PreimageParams };
 
-export type Predicates = Record<string, PredicateSpec>;
+/**
+ * A field maps to either one predicate or several instances of one over
+ * the same value (for example `age_threshold` at 18 and at 21). Each
+ * instance becomes its own leaf with its own params hash.
+ */
+export type PredicateEntry = PredicateSpec | PredicateSpec[];
+
+export type Predicates = Record<string, PredicateEntry>;
+
+/** One resolved predicate instance bound to a filesystem-safe leaf name. */
+export interface PredicateInstance {
+  /** Source field the witness value comes from. */
+  field: string;
+  /** Leaf name: `<field>` for the first instance, `<field>@<suffix>` after. */
+  leafName: string;
+  spec: PredicateSpec;
+  disclosure: Disclosure;
+}
 
 // =================== config ===================
 

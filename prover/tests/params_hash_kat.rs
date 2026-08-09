@@ -43,10 +43,19 @@ fn compute_for_vector(vector: &Value) -> String {
         .get("circuit")
         .and_then(Value::as_str)
         .expect("vector missing circuit");
-    let params = vector.get("params").expect("vector missing params");
+    // The Rust prover receives already-resolved parameters over the job
+    // spec, so it hashes `resolvedParams` when the vector carries one.
+    // The TS side hashes `params` and must reach the same value, which is
+    // what makes tier names and `minAgeYears` cross-language-covered.
+    let params = vector
+        .get("resolvedParams")
+        .or_else(|| vector.get("params"))
+        .expect("vector missing params");
 
     let hash = match circuit {
-        "preimage_knowledge" => {
+        // `commitment_only` leaves reuse the preimage_knowledge parameter
+        // shape; the mode changes what is proved, not the params hash.
+        "commitment_only" | "preimage_knowledge" => {
             let max = params
                 .get("maxValueBytes")
                 .and_then(Value::as_u64)

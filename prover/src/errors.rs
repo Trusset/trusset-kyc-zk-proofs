@@ -36,6 +36,9 @@ pub enum ErrorCode {
     DeterminismViolation,
     /// Stub-mode proof rejected in production mode.
     StubRejected,
+    /// Pinned `ProofOptions` fall below the published conjectured-security
+    /// floor. Raised at startup before any proving work begins.
+    WeakProofOptions,
 }
 
 impl ErrorCode {
@@ -55,6 +58,7 @@ impl ErrorCode {
             ErrorCode::Io => "E_IO",
             ErrorCode::DeterminismViolation => "E_DETERMINISM_VIOLATION",
             ErrorCode::StubRejected => "E_STUB_REJECTED",
+            ErrorCode::WeakProofOptions => "E_WEAK_PROOF_OPTIONS",
         }
     }
 }
@@ -145,6 +149,7 @@ mod tests {
         (ErrorCode::Io, "E_IO"),
         (ErrorCode::DeterminismViolation, "E_DETERMINISM_VIOLATION"),
         (ErrorCode::StubRejected, "E_STUB_REJECTED"),
+        (ErrorCode::WeakProofOptions, "E_WEAK_PROOF_OPTIONS"),
     ];
 
     #[test]
@@ -200,6 +205,7 @@ mod tests {
                 ErrorCode::Io => {}
                 ErrorCode::DeterminismViolation => {}
                 ErrorCode::StubRejected => {}
+                ErrorCode::WeakProofOptions => {}
             }
         }
         // Force evaluation against ALL_CODES so the two stay in sync.
@@ -207,7 +213,7 @@ mod tests {
             assert_covered(code.clone());
         }
         // The list length must match the enum size. Update both together.
-        assert_eq!(ALL_CODES.len(), 14);
+        assert_eq!(ALL_CODES.len(), 15);
     }
 
     #[test]

@@ -35,6 +35,17 @@ pub const SET_NODE_TAG: [u8; DOMAIN_TAG_BYTES] = pad32("TRUSSET-KYC-V2:SET-NODE"
 /// Spec §6 phrases commitment as `Rescue(value ‖ nonce)` without a tag; the plan
 /// (§12.1) requires every Rescue call be domain-separated, so we add it here.
 pub const COMMITMENT_TAG: [u8; DOMAIN_TAG_BYTES] = pad32("TRUSSET-KYC-V2:COMMIT");
+/// Tag for the v2 Merkle padding leaf: `pad = Rescue(MERKLE_PAD_TAG ‖ leaf_count_le8)`.
+/// Padding leaves fill the sorted leaf layer to the next power of two so no
+/// layer ever duplicates its last node. The tag keeps a padding leaf from
+/// colliding with any real `LEAF_TAG` digest.
+pub const MERKLE_PAD_TAG: [u8; DOMAIN_TAG_BYTES] = pad32("TRUSSET-KYC-V2:MERKLE-PAD");
+/// Tag for the v2 Merkle root wrap:
+/// `root = Rescue(MERKLE_ROOT_TAG ‖ inner_root ‖ leaf_count_le8 ‖ arity_u8)`.
+/// Binding the leaf count and arity into the root makes structurally
+/// different trees produce distinct roots and keeps a bare leaf digest from
+/// ever being interpretable as a root.
+pub const MERKLE_ROOT_TAG: [u8; DOMAIN_TAG_BYTES] = pad32("TRUSSET-KYC-V2:MERKLE-ROOT");
 
 /// Const-context inequality for two 32-byte arrays.
 const fn const_ne(a: &[u8; DOMAIN_TAG_BYTES], b: &[u8; DOMAIN_TAG_BYTES]) -> bool {
@@ -48,7 +59,7 @@ const fn const_ne(a: &[u8; DOMAIN_TAG_BYTES], b: &[u8; DOMAIN_TAG_BYTES]) -> boo
     false
 }
 
-// All C(7,2) = 21 pairs. Adding a new tag requires extending this block.
+// All C(9,2) = 36 pairs. Adding a new tag requires extending this block.
 const_assert!(const_ne(&LEAF_TAG, &NODE_TAG));
 const_assert!(const_ne(&LEAF_TAG, &PUBLIC_DIGEST_TAG));
 const_assert!(const_ne(&LEAF_TAG, &PROOF_DIGEST_TAG));
@@ -70,6 +81,21 @@ const_assert!(const_ne(&PROOF_DIGEST_TAG, &COMMITMENT_TAG));
 const_assert!(const_ne(&SET_LEAF_TAG, &SET_NODE_TAG));
 const_assert!(const_ne(&SET_LEAF_TAG, &COMMITMENT_TAG));
 const_assert!(const_ne(&SET_NODE_TAG, &COMMITMENT_TAG));
+const_assert!(const_ne(&LEAF_TAG, &MERKLE_PAD_TAG));
+const_assert!(const_ne(&LEAF_TAG, &MERKLE_ROOT_TAG));
+const_assert!(const_ne(&NODE_TAG, &MERKLE_PAD_TAG));
+const_assert!(const_ne(&NODE_TAG, &MERKLE_ROOT_TAG));
+const_assert!(const_ne(&PUBLIC_DIGEST_TAG, &MERKLE_PAD_TAG));
+const_assert!(const_ne(&PUBLIC_DIGEST_TAG, &MERKLE_ROOT_TAG));
+const_assert!(const_ne(&PROOF_DIGEST_TAG, &MERKLE_PAD_TAG));
+const_assert!(const_ne(&PROOF_DIGEST_TAG, &MERKLE_ROOT_TAG));
+const_assert!(const_ne(&SET_LEAF_TAG, &MERKLE_PAD_TAG));
+const_assert!(const_ne(&SET_LEAF_TAG, &MERKLE_ROOT_TAG));
+const_assert!(const_ne(&SET_NODE_TAG, &MERKLE_PAD_TAG));
+const_assert!(const_ne(&SET_NODE_TAG, &MERKLE_ROOT_TAG));
+const_assert!(const_ne(&COMMITMENT_TAG, &MERKLE_PAD_TAG));
+const_assert!(const_ne(&COMMITMENT_TAG, &MERKLE_ROOT_TAG));
+const_assert!(const_ne(&MERKLE_PAD_TAG, &MERKLE_ROOT_TAG));
 
 #[cfg(test)]
 mod tests {
@@ -85,6 +111,8 @@ mod tests {
             &SET_LEAF_TAG,
             &SET_NODE_TAG,
             &COMMITMENT_TAG,
+            &MERKLE_PAD_TAG,
+            &MERKLE_ROOT_TAG,
         ] {
             assert_eq!(tag.len(), 32);
         }
@@ -102,6 +130,8 @@ mod tests {
             ("SET-LEAF", SET_LEAF_TAG),
             ("SET-NODE", SET_NODE_TAG),
             ("COMMIT", COMMITMENT_TAG),
+            ("MERKLE-PAD", MERKLE_PAD_TAG),
+            ("MERKLE-ROOT", MERKLE_ROOT_TAG),
         ];
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
@@ -128,6 +158,8 @@ mod tests {
             &SET_LEAF_TAG,
             &SET_NODE_TAG,
             &COMMITMENT_TAG,
+            &MERKLE_PAD_TAG,
+            &MERKLE_ROOT_TAG,
         ] {
             assert!(tag.starts_with(prefix));
         }

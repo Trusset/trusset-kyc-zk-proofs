@@ -57,6 +57,15 @@ pub struct JobLeaf {
     pub public: serde_json::Value,
     /// 0x-prefixed 64-char hex of SHA-256 over canonical params.
     pub params_hash: String,
+    /// v2.1 per-leaf disclosure class (`plaintext` | `predicate` |
+    /// `commitment_only`). Absent falls back to a per-circuit default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disclosure: Option<String>,
+    /// v2.1 resolved public parameter values recorded in
+    /// `manifest.leaves[].params`. Absent falls back to a value derived
+    /// from `public` / the circuit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +76,15 @@ pub struct ListCommitment {
     /// SHA-256 of the source file (for `manifest.lists`).
     #[serde(default)]
     pub source_sha256: String,
+    /// Root declared by the committed list-commitment file. The CLI cannot
+    /// recompute a Rescue root, so the prover cross-checks this against its
+    /// own recomputation and refuses to proceed on a mismatch - a stale
+    /// committed file would otherwise be silently ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_root: Option<String>,
+    /// Depth declared by the same file, cross-checked alongside the root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_depth: Option<u8>,
 }
 
 impl Job {
@@ -77,9 +95,11 @@ impl Job {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.version != "2.0.0" {
+        if !trusset_bundle_format::manifest::ACCEPTED_MANIFEST_VERSIONS
+            .contains(&self.version.as_str())
+        {
             return Err(ProverError::input(format!(
-                "unsupported job version: {} (expected 2.0.0)",
+                "unsupported job version: {} (expected 2.0.0 or 2.1.0)",
                 self.version
             )));
         }
@@ -316,6 +336,8 @@ mod tests {
                     value: serde_json::json!("Alice"),
                     public: serde_json::json!({}),
                     params_hash: "0x".to_string() + &"c".repeat(64),
+                    disclosure: None,
+                    params: None,
                 }],
             }],
             list_commitments: BTreeMap::from([(
@@ -323,6 +345,8 @@ mod tests {
                 ListCommitment {
                     values: vec!["DEU".to_string()],
                     source_sha256: "0x".to_string() + &"d".repeat(64),
+                    declared_root: None,
+                    declared_depth: None,
                 },
             )]),
         };
@@ -368,7 +392,9 @@ mod tests {
         }
         assert_eq!(subject.len(), expected_subject_fields.len());
 
-        // JobLeaf
+        // JobLeaf. `disclosure` and `params` are optional-with-omission,
+        // so they are absent here (both None); the pinned required set is
+        // the five always-present fields.
         let leaf = subject["leaves"].as_array().unwrap()[0]
             .as_object()
             .unwrap();

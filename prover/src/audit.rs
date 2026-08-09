@@ -192,6 +192,23 @@ impl AuditLog {
         });
     }
 
+    pub fn emit_leaf_proved(
+        &mut self,
+        timestamp: &str,
+        subject_id: &str,
+        field: &str,
+        proof_bytes: usize,
+        ms: u64,
+    ) {
+        self.emit(&AuditEvent::LeafProved {
+            timestamp,
+            subject_id,
+            field,
+            proof_bytes,
+            ms,
+        });
+    }
+
     pub fn emit_subject_done(&mut self, timestamp: &str, subject_id: &str) {
         self.emit(&AuditEvent::SubjectDone {
             timestamp,

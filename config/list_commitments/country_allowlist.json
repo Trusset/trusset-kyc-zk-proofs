@@ -1,7 +1,7 @@
 {
   "listId": "country_allowlist",
   "version": 1,
-  "generator": "trusset-list-commit 2.0.0",
+  "generator": "trusset-list-commit 2.1.0",
   "sourceSha256": "0x4f4012962f3a660050116dba1cd9e32f92896aa3a6b4dcf61711cfb102d8687c",
   "values": [
     "DEU",
@@ -22,6 +22,6 @@
     "DNK",
     "FIN"
   ],
-  "root": "0x28800c1a185e23fddbe60cec59c873afa1a825cc4f20b1cb31cb42743b3b0737",
+  "root": "0x90785a7ea7ea20e096c8b18955971db0a3387dc522b42982d49041c65e3dc3a9",
   "depth": 5
 }

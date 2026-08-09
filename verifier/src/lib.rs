@@ -36,17 +36,58 @@ use std::path::Path;
 
 use serde::Serialize;
 use trusset_bundle_format::leaf::{compute_leaf_hash, compute_proof_digest};
-use trusset_bundle_format::manifest::{canonical_signing_bytes, Manifest, MODE_PRODUCTION};
-use trusset_bundle_format::merkle::compute_root;
+use trusset_bundle_format::manifest::{
+    canonical_signing_bytes, Manifest, ACCEPTED_MANIFEST_VERSIONS, DISCLOSURE_COMMITMENT_ONLY,
+    MODE_PRODUCTION, MODE_STUB,
+};
+use trusset_bundle_format::merkle::compute_root_versioned;
 use trusset_bundle_format::sign;
-use trusset_circuits_common::{digest_to_hex, hex_to_digest, CircuitId, Digest};
+use trusset_circuits_common::{bytes32_to_hex, digest_to_hex, hex_to_digest, CircuitId, Digest};
+
+/// Anchor the verification is rooted in. At least one must be supplied:
+/// a bundle verified against neither anchor proves nothing about who
+/// issued it.
+#[derive(Debug, Clone, Default)]
+pub struct VerifyAnchors {
+    /// 32-byte ed25519 public key pinned out-of-band (e.g. published on the
+    /// operator's website, hardcoded in the consumer's config). Use for
+    /// offline bundles where the root is not independently known.
+    pub expected_public_key: Option<[u8; sign::PUBLIC_KEY_LEN]>,
+    /// `kycHash` read from chain by the caller. When supplied the on-chain
+    /// root authenticates the bundle and no out-of-band key pinning is
+    /// required.
+    pub expected_root: Option<String>,
+}
+
+impl VerifyAnchors {
+    pub fn is_empty(&self) -> bool {
+        self.expected_public_key.is_none() && self.expected_root.is_none()
+    }
+
+    /// Human-readable description used in `VerifyReport.anchor`.
+    pub fn label(&self) -> &'static str {
+        match (
+            self.expected_public_key.is_some(),
+            self.expected_root.is_some(),
+        ) {
+            (true, true) => ANCHOR_BOTH,
+            (true, false) => ANCHOR_PUBLIC_KEY,
+            (false, true) => ANCHOR_ROOT,
+            (false, false) => ANCHOR_NONE,
+        }
+    }
+}
+
+pub const ANCHOR_PUBLIC_KEY: &str = "public_key";
+pub const ANCHOR_ROOT: &str = "root";
+pub const ANCHOR_BOTH: &str = "public_key+root";
+pub const ANCHOR_NONE: &str = "none";
 
 /// Options for `verify_bundle`.
 #[derive(Debug, Clone)]
 pub struct VerifyOptions {
-    /// 32-byte ed25519 public key pinned out-of-band (e.g. published on the
-    /// operator's website, hardcoded in the consumer's config).
-    pub expected_public_key: [u8; sign::PUBLIC_KEY_LEN],
+    /// Trust anchors. At least one is required.
+    pub anchors: VerifyAnchors,
     /// If `false`, manifests with `mode != "production"` are rejected. If
     /// `true`, `mode == "stub"` is tolerated (mirrors the
     /// `TRUSSET_KYC_ALLOW_STUB=1` env var on the prover side).
@@ -67,8 +108,17 @@ pub struct VerifyReport {
     pub signature_valid: bool,
     pub merkle_root_valid: bool,
     pub leaves: Vec<LeafReport>,
-    /// `true` iff every check above passed and every leaf in `leaves` has
-    /// `pass == true`.
+    /// Which anchor(s) the caller supplied: `public_key`, `root`,
+    /// `public_key+root`, or `none`. A report with `none` never passes.
+    pub anchor: String,
+    /// `true` when a caller-supplied root was checked and matched
+    /// `manifest.kycHash`. `false` when no root anchor was supplied.
+    pub root_anchor_valid: bool,
+    /// Manifest version as read from the bundle, for callers that branch
+    /// on it (`2.0.0` or `2.1.0`).
+    pub manifest_version: String,
+    /// `true` iff every applicable check above passed and every leaf in
+    /// `leaves` has `pass == true`.
     pub overall_pass: bool,
 }
 
@@ -129,19 +179,32 @@ pub fn verify_bundle(
 pub fn verify_loaded(loaded: &bundle::LoadedBundle, opts: &VerifyOptions) -> VerifyReport {
     let manifest = &loaded.manifest;
 
-    let layout_ok = loaded.layout_ok;
+    let version_acceptable = ACCEPTED_MANIFEST_VERSIONS.contains(&manifest.version.as_str());
+    let layout_ok = loaded.layout_ok && version_acceptable;
     let mode_acceptable = manifest.mode == MODE_PRODUCTION || opts.accept_stub;
     let kyc_hash_file_matches = loaded.kyc_hash_file_text.trim() == manifest.kyc_hash;
 
     // Signature: recompute the canonical signing view of the manifest.
-    let sig_bytes_result = canonical_signing_bytes(manifest);
-    let signature_valid = match (sig_bytes_result, loaded.signature.as_ref()) {
-        (Ok(payload), Some(sig)) if sig.len() == sign::SIGNATURE_LEN => {
-            let mut sig_arr = [0u8; sign::SIGNATURE_LEN];
-            sig_arr.copy_from_slice(sig);
-            sign::verify(&opts.expected_public_key, &payload, &sig_arr)
-        }
-        _ => false,
+    // Only meaningful when the caller pinned a public key; a root-anchored
+    // verification leaves this false and relies on `root_anchor_valid`.
+    let signature_valid = match opts.anchors.expected_public_key {
+        Some(pk) => match (canonical_signing_bytes(manifest), loaded.signature.as_ref()) {
+            (Ok(payload), Some(sig)) if sig.len() == sign::SIGNATURE_LEN => {
+                let mut sig_arr = [0u8; sign::SIGNATURE_LEN];
+                sig_arr.copy_from_slice(sig);
+                sign::verify(&pk, &payload, &sig_arr)
+            }
+            _ => false,
+        },
+        None => false,
+    };
+
+    // Root anchor: the caller-supplied on-chain root must equal the
+    // manifest's own root. Combined with the recomputed Merkle root below
+    // this binds the whole bundle to the chain without any key pinning.
+    let root_anchor_valid = match opts.anchors.expected_root.as_deref() {
+        Some(root) => root.trim().eq_ignore_ascii_case(&manifest.kyc_hash),
+        None => false,
     };
 
     // Walk each leaf.
@@ -155,19 +218,27 @@ pub fn verify_loaded(loaded: &bundle::LoadedBundle, opts: &VerifyOptions) -> Ver
         leaves.push(report.1);
     }
 
-    // Merkle root: only meaningful if every leaf produced a hash.
+    // Merkle root: only meaningful if every leaf produced a hash. The
+    // construction is selected by `manifest.merkleVersion` (absent = v1).
     let merkle_root_valid =
         if leaf_hashes.len() == manifest.leaves.len() && !manifest.leaves.is_empty() {
-            let (root, _) = compute_root(&leaf_hashes);
-            digest_to_hex(&root) == manifest.kyc_hash
+            match compute_root_versioned(&leaf_hashes, manifest.effective_merkle_version()) {
+                Some((root, _)) => digest_to_hex(&root) == manifest.kyc_hash,
+                None => false,
+            }
         } else {
             false
         };
 
+    // At least one anchor is required. Each supplied anchor must hold.
+    let anchors_ok = !opts.anchors.is_empty()
+        && (opts.anchors.expected_public_key.is_none() || signature_valid)
+        && (opts.anchors.expected_root.is_none() || root_anchor_valid);
+
     let overall_pass = layout_ok
         && mode_acceptable
         && kyc_hash_file_matches
-        && signature_valid
+        && anchors_ok
         && merkle_root_valid
         && leaves.iter().all(|l| l.pass);
 
@@ -181,6 +252,9 @@ pub fn verify_loaded(loaded: &bundle::LoadedBundle, opts: &VerifyOptions) -> Ver
         signature_valid,
         merkle_root_valid,
         leaves,
+        anchor: opts.anchors.label().to_string(),
+        root_anchor_valid,
+        manifest_version: manifest.version.clone(),
         overall_pass,
     }
 }
@@ -251,16 +325,34 @@ fn verify_leaf(
         return (None, report);
     }
 
-    // Stage 18: zero-byte proofs are the operator-facing `--skip-proofs`
-    // mode (manifest.mode == "stub"). The AIR verification is skipped
-    // for these; the policy-level mode check (above, mode_acceptable)
-    // is responsible for rejecting them in strict mode. The leaf hash
-    // chain still binds the empty proof_digest, so substituting a
-    // non-empty proof would break the leaf hash comparison below.
+    // `paramsHash` must be reproducible from the recorded parameters, so
+    // a counterparty reads the asserted thresholds from the bundle rather
+    // than trusting a config file it does not have.
+    if let Err(reason) = check_params_hash(entry, circuit_id) {
+        report.reason = Some(reason);
+        return (None, report);
+    }
+
+    // Zero-byte proofs are legitimate in exactly two cases: the
+    // operator-facing `--skip-proofs` mode (manifest.mode == "stub"), and
+    // `commitment_only` leaves, which carry a hiding commitment and no
+    // STARK by design. A production-mode bundle with an empty proof on a
+    // proving leaf is rejected here rather than silently passing.
     let circuit_verify_ok = if proof_bytes.is_empty() {
+        let commitment_only = entry.disclosure.as_deref() == Some(DISCLOSURE_COMMITMENT_ONLY);
+        if !commitment_only && manifest.mode != MODE_STUB {
+            report.reason = Some("empty proof on a proving leaf in a non-stub bundle".to_string());
+            return (None, report);
+        }
         true
     } else {
-        match dispatch_verify(circuit_id, &commitment, &entry.public_inputs, proof_bytes) {
+        match dispatch_verify(
+            circuit_id,
+            &commitment,
+            &entry.public_inputs,
+            proof_bytes,
+            manifest.circuits_version,
+        ) {
             Ok(()) => true,
             Err(reason) => {
                 report.reason = Some(reason);
@@ -307,11 +399,104 @@ fn decode_wallet(addr: &str) -> Option<[u8; 20]> {
     Some(out)
 }
 
+/// Recompute `paramsHash` from the leaf's recorded parameters and compare
+/// it to the signed value. v2.1 leaves carry `params`; v2.0 leaves are
+/// checked against the values already present in `publicInputs`, which are
+/// bound into `publicDigest` and therefore into the root.
+fn check_params_hash(
+    entry: &trusset_bundle_format::manifest::LeafEntry,
+    circuit_id: CircuitId,
+) -> Result<(), String> {
+    use trusset_circuit_age_threshold as age;
+    use trusset_circuit_preimage_knowledge as preimage;
+    use trusset_circuit_set_membership as set;
+    use trusset_circuit_tier_threshold as tier;
+
+    let params = entry.params.as_ref();
+    let pick_u64 = |key: &str| -> Option<u64> {
+        params
+            .and_then(|p| p.get(key))
+            .and_then(|v| v.as_u64())
+            .or_else(|| entry.public_inputs.get(key).and_then(|v| v.as_u64()))
+    };
+    let pick_str = |key: &str| -> Option<String> {
+        params
+            .and_then(|p| p.get(key))
+            .and_then(|v| v.as_str())
+            .or_else(|| entry.public_inputs.get(key).and_then(|v| v.as_str()))
+            .map(|s| s.to_string())
+    };
+
+    let expected = match circuit_id {
+        CircuitId::AgeThreshold => {
+            let min_age_days = pick_u64("minAgeDays")
+                .ok_or_else(|| "age_threshold leaf has no minAgeDays".to_string())?;
+            age::Params { min_age_days }.hash()
+        }
+        CircuitId::TierThreshold => {
+            let min_tier: u8 = pick_u64("minTier")
+                .ok_or_else(|| "tier_threshold leaf has no minTier".to_string())?
+                .try_into()
+                .map_err(|_| "minTier out of u8 range".to_string())?;
+            tier::Params { min_tier }.hash()
+        }
+        CircuitId::SetMembership => {
+            let list_id = pick_str("listId")
+                .ok_or_else(|| "set_membership leaf has no listId".to_string())?;
+            set::Params { list_id }.hash()
+        }
+        CircuitId::PreimageKnowledge => {
+            // v2.0 leaves record no parameters at all for this circuit, so
+            // the hash is only checkable when the v2.1 `params` block is
+            // present.
+            match params
+                .and_then(|p| p.get("maxValueBytes"))
+                .and_then(|v| v.as_u64())
+            {
+                Some(max_value_bytes) => preimage::Params {
+                    max_value_bytes: max_value_bytes as usize,
+                }
+                .hash(),
+                None => return Ok(()),
+            }
+        }
+    };
+
+    let expected_hex = bytes32_to_hex(&expected);
+    if expected_hex.eq_ignore_ascii_case(&entry.params_hash) {
+        Ok(())
+    } else {
+        Err(format!(
+            "paramsHash mismatch: manifest {} vs recomputed {}",
+            entry.params_hash, expected_hex
+        ))
+    }
+}
+
+/// Public wrapper over `dispatch_verify` for the WASM granular exports,
+/// which drive their own per-leaf check ladder.
+pub fn dispatch_verify_public(
+    circuit_id: CircuitId,
+    commitment: &Digest,
+    public_inputs: &serde_json::Value,
+    proof_bytes: &[u8],
+    circuits_version: u32,
+) -> Result<(), String> {
+    dispatch_verify(
+        circuit_id,
+        commitment,
+        public_inputs,
+        proof_bytes,
+        circuits_version,
+    )
+}
+
 fn dispatch_verify(
     circuit_id: CircuitId,
     commitment: &Digest,
     public_inputs: &serde_json::Value,
     proof_bytes: &[u8],
+    circuits_version: u32,
 ) -> Result<(), String> {
     use trusset_circuit_age_threshold as age;
     use trusset_circuit_preimage_knowledge as preimage;
@@ -361,10 +546,23 @@ fn dispatch_verify(
                 set_root,
                 set_depth,
             };
-            set::verify(proof_bytes, &public).map_err(|e| format!("set_membership: {:?}", e))
+            // circuitsVersion 2 bundles were proved under the frozen AIR
+            // that predates the Merkle-walk carry binding; they verify
+            // against that constraint set. Version 3 and later use the
+            // current AIR.
+            if circuits_version <= SET_MEMBERSHIP_AIR_V2_CIRCUITS_VERSION {
+                set::verify_v2(proof_bytes, &public)
+                    .map_err(|e| format!("set_membership (circuitsVersion 2 AIR): {:?}", e))
+            } else {
+                set::verify(proof_bytes, &public).map_err(|e| format!("set_membership: {:?}", e))
+            }
         }
     }
 }
+
+/// Highest `circuitsVersion` whose `set_membership` proofs were generated
+/// under the frozen pre-v2.1 AIR.
+pub const SET_MEMBERSHIP_AIR_V2_CIRCUITS_VERSION: u32 = 2;
 
 fn pub_u64(value: &serde_json::Value, field: &str) -> Result<u64, String> {
     value
@@ -424,6 +622,9 @@ mod tests {
                 pass: true,
                 reason: None,
             }],
+            anchor: ANCHOR_PUBLIC_KEY.to_string(),
+            root_anchor_valid: false,
+            manifest_version: "2.1.0".to_string(),
             overall_pass: true,
         };
 
@@ -443,6 +644,9 @@ mod tests {
             "signature_valid",
             "merkle_root_valid",
             "leaves",
+            "anchor",
+            "root_anchor_valid",
+            "manifest_version",
             "overall_pass",
         ];
         for name in &expected_top_level {

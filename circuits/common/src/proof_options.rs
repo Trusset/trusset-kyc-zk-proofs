@@ -7,12 +7,14 @@
 //!
 //! ## Parameter justification (see `docs/SECURITY.md` §soundness target)
 //!
-//! Winterfell 0.13's conjectured-security formula for a STARK over an
+//! Winterfell 0.13's conjectured-security estimate for a STARK over an
 //! extension field of degree `d` with blowup `b`, FRI queries `q`, and
-//! grinding `g` bits gives roughly:
+//! grinding `g` bits is a *minimum* of three independent terms, not a sum:
 //!
 //! ```text
-//!   bits ≈ q * log2(b) - log2(b) + g + d * log2(|F|)/2
+//!   bits ≈ min( q * log2(b) + g,                     FRI query soundness
+//!               d * log2(|F|) - log2(lde_domain),    field / DEEP soundness
+//!               hash collision resistance )          Rp64_256 = 128
 //! ```
 //!
 //! Concretely for this workspace:
@@ -23,16 +25,18 @@
 //! - **Blowup factor**: 16 (`log2 = 4`). 8 falls short of the 100-bit
 //!   target (Winterfell internal calculator reports 96 bits at blowup 8
 //!   with otherwise-identical parameters); 16 reaches 100.
-//! - **FRI queries**: 27. Gives `27 * 4 - 4 = 104` bits of FRI soundness
-//!   at blowup 16 before the extension and grinding contributions.
+//! - **FRI queries**: 27. Gives `27 * 4 + 16 = 124` bits of FRI query
+//!   soundness including grinding at blowup 16.
 //! - **Grinding**: 16 bits of PoW on the proof transcript.
 //! - **FRI folding**: 4 (standard Winterfell default).
 //! - **FRI remainder max degree**: 7.
 //!
-//! Combined bits-of-security estimate (Winterfell internal calculator):
-//! 100 conjectured bits, matching the value already published in
-//! `manifest.stark.securityBits` for Phase 2A — so flipping `mode` to
-//! `"production"` does not require revising that field.
+//! The field term dominates: with quadratic extension (`2 * 64 = 128`
+//! extension bits) and the largest workspace trace (`set_membership`,
+//! 2048 rows, LDE domain `2048 * 16 = 2^15`) it is `128 - 15 = 113`.
+//! `conjectured_security_bits()` below evaluates the min at compile time:
+//! `min(124, 113, 128) = 113` conjectured bits, above the published
+//! `manifest.stark.securityBits` floor of 100.
 //!
 //! These constants are pinned ONCE here. Changing them is a Phase-3-level
 //! workspace event: it invalidates every cached bundle, requires bumping
@@ -63,6 +67,55 @@ pub const STARK_FRI_REMAINDER_MAX_DEGREE: usize = 7;
 /// `manifest.stark.securityBits` and must not be changed without also
 /// updating that field (which is a determinism-breaking event).
 pub const STARK_SECURITY_BITS: u32 = 100;
+
+/// Largest trace length any workspace circuit produces (`set_membership`,
+/// 33 x 2048). The conjectured-security floor is evaluated against the
+/// worst-case LDE domain, so growing a trace past this bound without
+/// updating it fails the pinned-constants test below.
+pub const MAX_WORKSPACE_TRACE_LENGTH: usize = 2048;
+
+/// Base-field bit width (Goldilocks, `p = 2^64 - 2^32 + 1`).
+const FIELD_BITS: u32 = 64;
+
+/// Field extension degree used by `stark_options()` (Quadratic).
+const EXTENSION_DEGREE: u32 = 2;
+
+/// Rp64_256 collision resistance in bits.
+const HASH_COLLISION_BITS: u32 = 128;
+
+const fn log2_floor(mut n: usize) -> u32 {
+    let mut bits = 0;
+    while n > 1 {
+        n /= 2;
+        bits += 1;
+    }
+    bits
+}
+
+/// Conjectured security of the pinned `ProofOptions` against the
+/// worst-case workspace trace: the minimum of the FRI query term
+/// (`queries * log2(blowup) + grinding`), the field term
+/// (`extension_bits - log2(lde_domain)`), and the hash collision bound.
+#[must_use]
+pub const fn conjectured_security_bits() -> u32 {
+    let query_bits =
+        STARK_NUM_QUERIES as u32 * log2_floor(STARK_BLOWUP_FACTOR) + STARK_GRINDING_FACTOR;
+    let lde_bits = log2_floor(MAX_WORKSPACE_TRACE_LENGTH * STARK_BLOWUP_FACTOR);
+    let field_bits = EXTENSION_DEGREE * FIELD_BITS - lde_bits;
+    let mut bits = query_bits;
+    if field_bits < bits {
+        bits = field_bits;
+    }
+    if HASH_COLLISION_BITS < bits {
+        bits = HASH_COLLISION_BITS;
+    }
+    bits
+}
+
+const _: () = assert!(
+    conjectured_security_bits() >= STARK_SECURITY_BITS,
+    "pinned ProofOptions fall below the published security floor"
+);
 
 /// Constraint-batching method (Winterfell 0.13 ProofOptions extension).
 /// `Linear` is the most conservative / audit-friendly choice; it has been
@@ -143,5 +196,20 @@ mod tests {
             BatchingMethod::Linear,
             "DEEP batching method drift"
         );
+    }
+
+    /// Pin the achieved conjectured-security estimate. The compile-time
+    /// assertion above only enforces the floor; this test forces an
+    /// engineer who changes any input to re-derive and acknowledge the
+    /// new figure in `docs/SECURITY.md` and `docs/PERFORMANCE.md`.
+    #[test]
+    fn conjectured_security_is_pinned() {
+        assert_eq!(MAX_WORKSPACE_TRACE_LENGTH, 2048, "trace-length bound drift");
+        assert_eq!(
+            conjectured_security_bits(),
+            113,
+            "conjectured security drift"
+        );
+        assert!(conjectured_security_bits() >= STARK_SECURITY_BITS);
     }
 }

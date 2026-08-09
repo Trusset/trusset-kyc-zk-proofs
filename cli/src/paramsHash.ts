@@ -34,6 +34,10 @@ export function computeParamsHash(
   rc: ResolvedConfig,
 ): string {
   switch (predicate.circuit) {
+    // `commitment_only` leaves reuse the preimage_knowledge parameter
+    // shape: the mode changes what is proved, not how the parameters are
+    // committed.
+    case 'commitment_only':
     case 'preimage_knowledge': {
       const maxBytes = BigInt(predicate.params?.maxValueBytes ?? 128);
       return sha256(

@@ -19,7 +19,10 @@ import type { ResolvedConfig } from '../config';
 interface Vector {
   name: string;
   circuit: string;
+  /** What the TS CLI consumes, including unresolved tier names / years. */
   params: Record<string, unknown>;
+  /** Post-resolution form the Rust prover hashes, when they differ. */
+  resolvedParams?: Record<string, unknown>;
 }
 
 interface KatFile {
@@ -49,6 +52,7 @@ function fixtureConfig(): ResolvedConfig {
   return {
     raw: {} as ResolvedConfig['raw'],
     predicates: {},
+    instances: [],
     tiers: { NONE: 0, RETAIL: 1, PROFESSIONAL: 2, ELIGIBLE_COUNTERPARTY: 3 },
     lists: {},
     masterKeyEnv: 'TRUSSET_KYC_MASTER_KEY',
@@ -64,6 +68,7 @@ function toPredicateSpec(vector: Vector): PredicateSpec {
   // to consume each circuit's params shape.
   switch (vector.circuit) {
     case 'preimage_knowledge':
+    case 'commitment_only':
     case 'tier_threshold':
     case 'age_threshold':
     case 'set_membership':
@@ -99,7 +104,28 @@ test('every KAT vector agrees with Rust on params_hash', () => {
 test('KAT has at least one vector per circuit', () => {
   const kat = loadKat();
   const circuits = new Set(kat.vectors.map((v) => v.circuit));
-  for (const c of ['preimage_knowledge', 'tier_threshold', 'age_threshold', 'set_membership']) {
+  for (const c of [
+    'preimage_knowledge',
+    'commitment_only',
+    'tier_threshold',
+    'age_threshold',
+    'set_membership',
+  ]) {
     assert.ok(circuits.has(c), `KAT missing a vector for circuit "${c}"`);
   }
+});
+
+test('KAT covers the TS-side parameter resolution paths', () => {
+  const kat = loadKat();
+  // Vectors carrying `resolvedParams` are the ones where TS must resolve
+  // something Rust receives pre-resolved: tier names and minAgeYears.
+  const resolving = kat.vectors.filter((v) => v.resolvedParams !== undefined);
+  assert.ok(
+    resolving.some((v) => v.circuit === 'tier_threshold' && typeof (v.params as { minTier?: unknown }).minTier === 'string'),
+    'KAT must cover a string minTier so resolveTier is checked against Rust',
+  );
+  assert.ok(
+    resolving.some((v) => v.circuit === 'age_threshold' && (v.params as { minAgeYears?: unknown }).minAgeYears !== undefined),
+    'KAT must cover minAgeYears so the years-to-days conversion is checked against Rust',
+  );
 });

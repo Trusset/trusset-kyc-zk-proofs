@@ -1,12 +1,12 @@
 {
   "name": "trusset-kyc-cli",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
-  "description": "TypeScript CLI wrapper around trusset-prover and trusset-verifier-cli — preserves v1 CLI verbs.",
+  "description": "TypeScript CLI wrapper around trusset-prover and trusset-verifier-cli \u2014 preserves v1 CLI verbs.",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "test": "tsc && node --test 'dist/**/*.test.js'"
+    "test": "tsc && node --test dist/__tests__/*.test.js"
   },
   "dependencies": {
     "commander": "^12.1.0",

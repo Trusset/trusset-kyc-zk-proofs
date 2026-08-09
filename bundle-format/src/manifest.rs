@@ -21,7 +21,26 @@ use std::collections::BTreeMap;
 /// independent of wall-clock time (plan §"Determinism").
 pub const CREATED_AT_SENTINEL: &str = "1970-01-01T00:00:00Z";
 
-pub const MANIFEST_VERSION: &str = "2.0.0";
+pub const MANIFEST_VERSION: &str = "2.1.0";
+
+/// Prior manifest version still accepted on the verify path. Bundles
+/// produced by v2.0.0 tooling parse into the same struct (every v2.1
+/// field is optional-with-omission) and re-serialize byte-identically,
+/// so their signatures stay valid under v2.1 verifiers.
+pub const MANIFEST_VERSION_V200: &str = "2.0.0";
+
+/// Manifest versions the verify path accepts.
+pub const ACCEPTED_MANIFEST_VERSIONS: [&str; 2] = [MANIFEST_VERSION_V200, MANIFEST_VERSION];
+
+/// Per-leaf disclosure classes (v2.1, optional field `disclosure`).
+/// `plaintext`: the field's value is also disclosed outside the zk layer
+/// (batch index CSV and manifest passthrough) - the proof does not hide it
+/// in the default pipeline. `predicate`: only the predicate outcome is
+/// meaningful to a counterparty. `commitment_only`: hiding commitment and
+/// leaf hash only, no STARK; the proof file is a zero-length sentinel.
+pub const DISCLOSURE_PLAINTEXT: &str = "plaintext";
+pub const DISCLOSURE_PREDICATE: &str = "predicate";
+pub const DISCLOSURE_COMMITMENT_ONLY: &str = "commitment_only";
 
 /// Phase 2A marker. Phase 2B flips this to `MODE_PRODUCTION` for real
 /// STARK proofs. Verifiers refuse stub manifests by default
@@ -40,7 +59,15 @@ pub const MODE_PRODUCTION: &str = "production";
 /// Stable version of the `secrets.enc` KDF chain. Folded into the encrypt
 /// info string in `prover/src/encrypt.rs` and serialized into the manifest
 /// so a future key rotation can decrypt old bundles.
-pub const SECRETS_KDF_VERSION: u32 = 1;
+/// Version 2 (v2.1.0) introduces the wrapped per-subject key layout; the
+/// version 1 direct-derivation path is retained for decrypting existing
+/// bundles.
+pub const SECRETS_KDF_VERSION: u32 = 2;
+
+/// The v2.0.0 `secrets.enc` KDF chain (subject material derived directly
+/// from the master key). Selected by `manifest.secretsKdfVersion == 1` on
+/// the decrypt path.
+pub const SECRETS_KDF_VERSION_V1: u32 = 1;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StarkBlock {
@@ -91,6 +118,10 @@ pub struct LeafEntry {
     pub params_hash: String,
     #[serde(rename = "leafHash")]
     pub leaf_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disclosure: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -127,6 +158,28 @@ pub struct Manifest {
     pub lists: BTreeMap<String, ListEntry>,
     #[serde(rename = "secretsKdfVersion")]
     pub secrets_kdf_version: u32,
+    #[serde(
+        rename = "merkleVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub merkle_version: Option<u32>,
+    #[serde(
+        rename = "configHash",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub config_hash: Option<String>,
+}
+
+impl Manifest {
+    /// The Merkle construction this manifest's `kycHash` was computed
+    /// with. Absent means the v1 construction (pre-v2.1 bundles).
+    #[must_use]
+    pub fn effective_merkle_version(&self) -> u32 {
+        self.merkle_version
+            .unwrap_or(crate::merkle::MERKLE_VERSION_V1)
+    }
 }
 
 /// Serialize the manifest to canonical bytes used as the ed25519 signing
@@ -174,6 +227,8 @@ mod tests {
             passthrough: serde_json::json!({}),
             lists: BTreeMap::new(),
             secrets_kdf_version: SECRETS_KDF_VERSION,
+            merkle_version: Some(crate::merkle::MERKLE_VERSION_V2),
+            config_hash: None,
         }
     }
 
@@ -213,6 +268,34 @@ mod tests {
         let bytes = canonical_disk_bytes(&m).unwrap();
         let parsed: Manifest = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(m, parsed);
+    }
+
+    /// v2.0.0 manifests carry none of the v2.1 optional fields. They must
+    /// re-serialize byte-identically so their ed25519 signatures stay
+    /// valid under v2.1 tooling - absent options must never appear as
+    /// JSON keys.
+    #[test]
+    fn absent_v21_fields_are_omitted_from_canonical_bytes() {
+        let mut m = sample_manifest();
+        m.version = MANIFEST_VERSION_V200.to_string();
+        m.merkle_version = None;
+        m.config_hash = None;
+        let text = String::from_utf8(canonical_disk_bytes(&m).unwrap()).unwrap();
+        assert!(!text.contains("merkleVersion"));
+        assert!(!text.contains("configHash"));
+        assert!(!text.contains("disclosure"));
+        let parsed: Manifest = serde_json::from_slice(text.as_bytes()).unwrap();
+        assert_eq!(
+            canonical_signing_bytes(&m).unwrap(),
+            canonical_signing_bytes(&parsed).unwrap()
+        );
+    }
+
+    #[test]
+    fn accepted_versions_cover_both_wire_versions() {
+        assert!(ACCEPTED_MANIFEST_VERSIONS.contains(&"2.0.0"));
+        assert!(ACCEPTED_MANIFEST_VERSIONS.contains(&"2.1.0"));
+        assert_eq!(MANIFEST_VERSION, "2.1.0");
     }
 
     /// Wire-format constants for `manifest.mode`. These strings are

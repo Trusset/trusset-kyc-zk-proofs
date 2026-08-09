@@ -3,7 +3,7 @@
 v2.0.0 is breaking on internals but preserves the v1 CLI surface and the
 batched index CSV consumed by the Trusset uploader. Tier-1 banks running
 v1 in production should be able to switch with config + env-var changes
-only — no upstream pipeline edits required.
+only - no upstream pipeline edits required.
 
 The eleven things you need to know.
 
@@ -11,7 +11,7 @@ The eleven things you need to know.
 
 A v1 `kycHash` (32-byte keccak Merkle root over `keccak256(abiEncode(field,
 value))` leaves) **cannot** be re-derived from v2 outputs. The two
-algorithms hash different things — v2 binds each leaf to a STARK proof,
+algorithms hash different things - v2 binds each leaf to a STARK proof,
 v1 did not. Re-running a subject through v2 produces a fresh `kycHash`
 that is unrelated to whatever v1 produced.
 
@@ -24,10 +24,10 @@ tool to re-verify them. New subjects go through v2.
 |---|---|
 | `npm start` | `npm start` (unchanged) |
 | `npm start -- --raw` | `npm start -- --raw` (unchanged) |
-| `npm run decrypt` | `npm run decrypt` (semantics change — see §3) |
+| `npm run decrypt` | `npm run decrypt` (semantics change - see §3) |
 | `npm run decrypt` alias `verify` | **removed**. `npm run verify -- <wallet>` is now the counterparty bundle verifier |
 | `npm run show` | `npm run show` (output format extended) |
-| — | `npm start -- --skip-proofs` (new) |
+| - | `npm start -- --skip-proofs` (new) |
 
 If any of your scripts call `npm run verify`, double-check what behavior
 you actually wanted. v1 `verify` was an alias for `decrypt` (re-hash and
@@ -85,7 +85,7 @@ fast.
 | `manifest` | optional | `signingKeyEnv` defaults to `TRUSSET_KYC_SIGNING_KEY` |
 
 The presence of v1's `security.hashAlgorithm` field is honored for
-readability but is otherwise ignored — v2 always uses Rescue-Prime over
+readability but is otherwise ignored - v2 always uses Rescue-Prime over
 the Goldilocks field. You'll see one warning per run.
 
 ## 7. Output shape change: bundles + batched CSV
@@ -105,8 +105,8 @@ your Trusset uploader has been updated to walk per-subject bundles.
 
 In v1 the column held a keccak Merkle root over field-level keccak
 leaves. In v2 it holds the Rescue-Prime Merkle root over the per-leaf
-STARK-bound leaf hashes (spec §7–§8). The Trusset upload API that
-consumed v1 hex roots continues to work without changes — the column
+STARK-bound leaf hashes (spec §7-§8). The Trusset upload API that
+consumed v1 hex roots continues to work without changes - the column
 format is unchanged (0x-prefixed 64-char hex). What's different is what
 the hex commits to.
 
@@ -149,7 +149,7 @@ isolates failures into two stages:
   row is appended to the same `failures.csv` with `stage=prover`.
 
 Exit codes: 0 (everything succeeded), 2 (at least one subject succeeded
-AND at least one failed — partial), 1 (no successes, batch-aborting).
+AND at least one failed - partial), 1 (no successes, batch-aborting).
 Update your CI checks accordingly.
 
 ## 12. Lost `secrets.enc` is unrecoverable
@@ -171,15 +171,15 @@ operator-private data.
 | Hash without index column | `npm start -- --raw` | `npm start -- --raw` |
 | Show config | `npm run show` | `npm run show` |
 | Self-audit | `npm run decrypt` (re-keccak vs `kycHash` column) | `npm run decrypt` (decrypt secrets, re-prove, compare) |
-| Counterparty verify | — | `npm run verify -- <wallet> --public-key <hex>` |
-| Iteration speed | — | `npm start -- --skip-proofs` |
+| Counterparty verify | - | `npm run verify -- <wallet> --public-key <hex>` |
+| Iteration speed | - | `npm start -- --skip-proofs` |
 
 ## 13. v2 commitment-formula bump (CIRCUITS_VERSION 1 → 2)
 
 Phase 2B Step-B replaces the byte-level v1 commitment with a felt-level
 Rescue commitment over a domain-separated input vector (`COMMITMENT_TAG ‖
 circuit_id ‖ length ‖ padded_witness ‖ nonce`). Every commitment value
-for every leaf in every circuit changes — bundles produced by v1 cannot
+for every leaf in every circuit changes - bundles produced by v1 cannot
 be verified by v2 binaries and vice versa.
 
 Operator actions on upgrade:
@@ -258,11 +258,161 @@ Equivalent prove commands across versions:
 | Phase 2A (stub) | Phase 2B post-Stage-23 (production) |
 |---|---|
 | `npm start` (mode=stub) | `npm start` (mode=production) |
-| — | `npm start -- --skip-proofs` (mode=stub for development) |
+| - | `npm start -- --skip-proofs` (mode=stub for development) |
 | `npm run verify -- <wallet>` (accepts stub) | `npm run verify -- <wallet>` (rejects stub by default) |
 | `npm run verify -- <wallet> --strict` (rejects stub) | `npm run verify -- <wallet>` (same, default) |
-| — | `npm run verify -- <wallet> --accept-stub` (development) |
+| - | `npm run verify -- <wallet> --accept-stub` (development) |
 
 Stub-mode bundles (`manifest.mode == "stub"`) produced during Phase 2B
 Step-A or Step-B development are not signed for production and can be
 discarded freely.
+
+## 15. v2.0 to v2.1: root computation, key wrapping, and schema additions
+
+v2.1.0 changes how `kycHash` is computed, how per-subject key material is
+derived, and what `manifest.json` records. Existing bundles keep
+verifying; new issuance produces different roots for the same input.
+
+### What changes a `kycHash` value
+
+Two independent changes make a v2.1 bundle's root differ from what v2.0
+would have produced for the same subject and inputs:
+
+1. **`merkleVersion: 2`.** The subject tree pads to a power of two with a
+   domain-separated padding leaf and binds the leaf count and arity into
+   a root wrap, replacing v1's last-node duplication. See
+   [CIRCUITS.md](CIRCUITS.md) for the construction and the three
+   ambiguities it removes.
+2. **`CIRCUITS_VERSION` 2 to 3.** The `set_membership` AIR gained the
+   Merkle-walk carry binding, and `circuits_version` is folded into every
+   per-subject HKDF info string, so every commitment and therefore every
+   leaf hash changes.
+
+**Existing bundles are unaffected.** A manifest with no `merkleVersion`
+field means version 1, and the v1 computation is retained; a manifest with
+`circuitsVersion: 2` is verified against the frozen pre-v2.1
+`set_membership` AIR. Both selections are automatic.
+
+**Re-registering on chain is per-subject and optional.** An operator who
+re-issues a subject under v2.1 gets a new `kycHash` and must publish it;
+one who does not re-issue keeps the old root, which keeps verifying. There
+is no flag day.
+
+### Key derivation: `secretsKdfVersion` 1 to 2
+
+Nonces no longer derive from the master key. Each subject gets an
+independent `subject_key`; the master key wraps it inside `secrets.enc`
+and derives nothing else. Under `security.deterministic: true` the subject
+key is itself HKDF-derived so runs stay byte-identical; under
+`deterministic: false` it is drawn from OS entropy. The full chain and the
+honest limits of the wrapping under deterministic mode are in
+[SECURITY.md](SECURITY.md).
+
+`secrets.enc` gains a leading version byte and a wrapped-key block. v1
+blobs still decrypt: the path is selected by `manifest.secretsKdfVersion`.
+
+New in v2.1, rotating the master key no longer requires re-proving:
+
+```bash
+TRUSSET_KYC_MASTER_KEY=<old-hex> \
+TRUSSET_KYC_NEW_MASTER_KEY=<new-hex> \
+  trusset-prover --rekey-subject output/0xWALLET
+```
+
+Only `secrets.enc` is rewritten. The manifest, its signature, `kycHash`,
+and every proof file are untouched. v1 bundles must be re-proved to move
+to a new master key.
+
+### `config_hash` now varies with the config
+
+Before v2.1, `canonicalConfigHash` passed a key array as
+`JSON.stringify`'s replacer. An array replacer filters keys at every
+nesting depth, so the serialized payload was a constant and `config_hash`
+was the same value for every possible config: the documented HKDF binding
+never held, and changing `predicates` did not re-key anything. v2.1
+serializes with sorted keys at every depth, so the hash now genuinely
+tracks the config.
+
+For operators this means: **editing `config.json` now changes every
+subject's derived key material**, as the documentation always claimed it
+would. Bundles issued before v2.1 carry `secretsKdfVersion: 1` and the
+legacy constant, and decrypt unchanged.
+
+`manifest.json` now records `configHash`, so decryption and re-keying no
+longer depend on out-of-band knowledge of the config that produced a
+bundle.
+
+### Manifest schema additions (all optional)
+
+| Field | Level | Meaning |
+|---|---|---|
+| `merkleVersion` | top | Root construction; absent means 1 |
+| `configHash` | top | The config hash folded into the KDF chain |
+| `disclosure` | leaf | `plaintext`, `predicate`, or `commitment_only` |
+| `params` | leaf | Resolved predicate parameters, e.g. `{"minAgeDays": 6570}` |
+
+Every addition is optional-with-omission. A v2.0.0 manifest parses,
+re-serializes byte-identically, and keeps its signature valid under v2.1
+code - enforced by `v200_manifest_reserializes_byte_identically` against a
+real v2.0.0 fixture. The verify path accepts both `2.0.0` and `2.1.0`.
+
+**Counterparties running their own verifier must rebuild it.** A verifier
+that re-serializes the typed manifest struct to recompute the signing view
+will drop fields it does not know about and compute the wrong bytes. For
+the Trusset issuer backend this means re-vendoring the WASM via
+[`scripts/rebuild-wasm.sh`](../scripts/rebuild-wasm.sh) and widening its
+`manifestVersions` and `circuitsVersions` anchors.
+
+### Verification: anchors are now explicit
+
+`npm run verify` previously required `--public-key`. It now accepts either
+anchor and requires at least one:
+
+| Situation | Command |
+|---|---|
+| The root is known from chain | `npm run verify -- <wallet> --root 0x<64-hex>` |
+| Offline bundle, root not known | `npm run verify -- <wallet> --public-key <hex>` |
+| Both | pass both flags; both are checked |
+| Neither | usage error, exit 64 |
+
+Exit codes are unchanged: 0 pass, 2 fail, 66 unreadable bundle.
+`VerifyReport` gains `anchor`, `root_anchor_valid`, and
+`manifest_version`; consumers parsing that JSON should tolerate the new
+keys.
+
+### New predicate capabilities
+
+- A field may carry **several predicate instances**. Write an array:
+  `"dateOfBirth": [{"circuit":"age_threshold","params":{"minAgeYears":18}},
+  {"circuit":"age_threshold","params":{"minAgeYears":21}}]`. The first
+  instance keeps the bare field name; later ones get a deterministic
+  params-derived suffix (`dateOfBirth@7665d`) that is filesystem-safe and
+  becomes the `.bin` basename.
+- `"circuit": "commitment_only"` produces a hiding commitment and a leaf
+  hash with no STARK. `config.example.json` now uses it for `firstName`,
+  `lastName`, `documentType`, and `documentNumber`. **Existing
+  `config.json` files are untouched** - the default for a field that
+  already specifies `preimage_knowledge` is unchanged.
+
+### Behavior fixes worth knowing about
+
+- `--no-deterministic` previously parsed but did nothing. It now flows
+  into the job spec and stamps `"deterministic": false` into the manifest.
+- `--isolate` was dead and has been removed.
+- A record missing a value for a configured predicate field used to abort
+  the entire batch. It is now quarantined into `failures.csv` like any
+  other bad row.
+- A prover that died before emitting any event used to produce exit 0. It
+  now reports the failure.
+- The `leaf_proved` NDJSON event was declared on both sides but never
+  emitted. It is now emitted with real `proof_bytes` and `ms`, to stdout
+  and to `audit.log`.
+
+Equivalent commands across versions:
+
+| v2.0 | v2.1 |
+|---|---|
+| `npm run verify -- <wallet> --public-key <hex>` | same, or `--root 0x<hex>` |
+| (no equivalent) | `trusset-prover --rekey-subject output/0xWALLET` |
+| single predicate per field | array of predicate instances per field |
+| `preimage_knowledge` for identity fields | `commitment_only` in the example config |

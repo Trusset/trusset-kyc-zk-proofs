@@ -1,6 +1,6 @@
 {
   "name": "trusset-kyc-hashing",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "description": "Per-leaf zk-STARK KYC hashing tool for Trusset tokenization infrastructure",
   "main": "cli/dist/index.js",
@@ -16,7 +16,14 @@
   "engines": {
     "node": ">=18"
   },
-  "keywords": ["kyc", "hashing", "tokenization", "blockchain", "zk-stark", "winterfell"],
+  "keywords": [
+    "kyc",
+    "hashing",
+    "tokenization",
+    "blockchain",
+    "zk-stark",
+    "winterfell"
+  ],
   "author": "Trusset",
   "license": "MIT"
 }

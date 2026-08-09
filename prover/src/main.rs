@@ -11,17 +11,20 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
+use trusset_circuits_common::{conjectured_security_bits, STARK_SECURITY_BITS};
 use trusset_prover::{
     audit::AuditLog,
     bundle::build_subject_bundle,
     errors::{ErrorCode, ProverError, Result},
     io::{Event, EventStream},
     job::{parse_config_hash, Job},
+    rekey::rekey_bundle,
     sign::SigningSecret,
 };
 
 const ENV_MASTER_KEY: &str = "TRUSSET_KYC_MASTER_KEY";
 const ENV_SIGNING_KEY: &str = "TRUSSET_KYC_SIGNING_KEY";
+const ENV_NEW_MASTER_KEY: &str = "TRUSSET_KYC_NEW_MASTER_KEY";
 
 fn main() {
     let exit_code = run();
@@ -29,6 +32,24 @@ fn main() {
 }
 
 fn run() -> i32 {
+    // Startup gate: refuse to prove with `ProofOptions` that fall below
+    // the published security floor. The constants are also checked at
+    // compile time in `circuits/common/src/proof_options.rs`; this is the
+    // operator-visible failure with a stable error code.
+    if conjectured_security_bits() < STARK_SECURITY_BITS {
+        eprintln!(
+            "[prover] fatal: {}: pinned ProofOptions give {} conjectured bits, below the {}-bit floor",
+            ErrorCode::WeakProofOptions,
+            conjectured_security_bits(),
+            STARK_SECURITY_BITS
+        );
+        return 1;
+    }
+
+    if let Some(bundle_dir) = rekey_target() {
+        return run_rekey(&bundle_dir);
+    }
+
     let mut events = EventStream::new(std::io::stdout());
 
     let (master_key, signing_key) = match load_keys() {
@@ -109,6 +130,22 @@ fn run() -> i32 {
         ) {
             Ok(report) => {
                 ok += 1;
+                for t in &report.leaf_timings {
+                    let leaf_ts = current_iso_timestamp();
+                    let _ = events.emit(&Event::LeafProved {
+                        subject_id: &subject.subject_id,
+                        field: &t.field,
+                        proof_bytes: t.proof_bytes,
+                        ms: t.ms,
+                    });
+                    audit.emit_leaf_proved(
+                        &leaf_ts,
+                        &subject.subject_id,
+                        &t.field,
+                        t.proof_bytes,
+                        t.ms,
+                    );
+                }
                 let done_ts = current_iso_timestamp();
                 let _ = events.emit(&Event::SubjectDone {
                     subject_id: &subject.subject_id,
@@ -136,6 +173,76 @@ fn run() -> i32 {
     } else {
         1
     }
+}
+
+/// `--rekey-subject <bundle-dir>`: rotate one bundle's `secrets.enc` from
+/// `TRUSSET_KYC_MASTER_KEY` to `TRUSSET_KYC_NEW_MASTER_KEY` without
+/// re-proving. Returns `None` for a normal proving run.
+fn rekey_target() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--rekey-subject" {
+            return args.next();
+        }
+    }
+    None
+}
+
+fn run_rekey(bundle_dir: &str) -> i32 {
+    let old_master = match load_master_key(ENV_MASTER_KEY) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("[prover] fatal: {}", e);
+            return 1;
+        }
+    };
+    let new_master = match load_master_key(ENV_NEW_MASTER_KEY) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("[prover] fatal: {}", e);
+            return 1;
+        }
+    };
+    match rekey_bundle(std::path::Path::new(bundle_dir), &old_master, &new_master) {
+        Ok(report) => {
+            println!(
+                "rekeyed {} ({} bytes) for {}",
+                report.secrets_path.display(),
+                report.bytes_written,
+                report.subject_id
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("[prover] fatal: {}", e);
+            1
+        }
+    }
+}
+
+fn load_master_key(env_name: &str) -> Result<[u8; 32]> {
+    let hex_value = std::env::var(env_name).map_err(|_| {
+        ProverError::new(
+            ErrorCode::KeyMissing,
+            format!("env var {} is required (32-byte hex)", env_name),
+        )
+    })?;
+    let bytes = hex::decode(hex_value.trim().trim_start_matches("0x")).map_err(|_| {
+        ProverError::new(ErrorCode::KeyMalformed, format!("{} is not hex", env_name))
+    })?;
+    if bytes.len() != 32 {
+        return Err(ProverError::new(
+            ErrorCode::KeyMalformed,
+            format!(
+                "{} must be 32 bytes (64 hex chars), got {}",
+                env_name,
+                bytes.len()
+            ),
+        ));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
 }
 
 fn load_keys() -> Result<([u8; 32], SigningSecret)> {

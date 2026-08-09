@@ -44,9 +44,36 @@ fn now_iso() -> &'static str {
     "2026-05-14T09:12:33Z"
 }
 
-fn pad_hex64(short: &str) -> String {
-    let h = short.trim_start_matches("0x");
-    format!("0x{:0>1$}", h, 64)
+/// Real `Params::hash()` values. The verifier recomputes `paramsHash` from
+/// each leaf's recorded parameters, so fixtures must carry the genuine
+/// hashes rather than placeholders.
+fn hex32(bytes: [u8; 32]) -> String {
+    let mut s = String::from("0x");
+    for b in bytes.iter() {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
+}
+
+fn preimage_params_hash(max_value_bytes: usize) -> String {
+    hex32(trusset_circuit_preimage_knowledge::Params { max_value_bytes }.hash())
+}
+
+fn age_params_hash(min_age_days: u64) -> String {
+    hex32(trusset_circuit_age_threshold::Params { min_age_days }.hash())
+}
+
+fn tier_params_hash(min_tier: u8) -> String {
+    hex32(trusset_circuit_tier_threshold::Params { min_tier }.hash())
+}
+
+fn set_params_hash(list_id: &str) -> String {
+    hex32(
+        trusset_circuit_set_membership::Params {
+            list_id: list_id.to_string(),
+        }
+        .hash(),
+    )
 }
 
 fn fixture_job(output_root: &str) -> Job {
@@ -56,28 +83,36 @@ fn fixture_job(output_root: &str) -> Job {
             circuit: "preimage_knowledge".to_string(),
             value: serde_json::json!("Alice"),
             public: serde_json::json!({}),
-            params_hash: pad_hex64("aa"),
+            params_hash: preimage_params_hash(128),
+            disclosure: None,
+            params: None,
         },
         JobLeaf {
             field: "dateOfBirth".to_string(),
             circuit: "age_threshold".to_string(),
             value: serde_json::json!("1985-04-12"),
             public: serde_json::json!({"min_age_days": 6570u64}),
-            params_hash: pad_hex64("bb"),
+            params_hash: age_params_hash(6570),
+            disclosure: None,
+            params: None,
         },
         JobLeaf {
             field: "investorType".to_string(),
             circuit: "tier_threshold".to_string(),
             value: serde_json::json!("PROFESSIONAL"),
             public: serde_json::json!({"min_tier": 1u64}),
-            params_hash: pad_hex64("cc"),
+            params_hash: tier_params_hash(1),
+            disclosure: None,
+            params: None,
         },
         JobLeaf {
             field: "country".to_string(),
             circuit: "set_membership".to_string(),
             value: serde_json::json!("DEU"),
             public: serde_json::json!({"list_id": "country_allowlist"}),
-            params_hash: pad_hex64("dd"),
+            params_hash: set_params_hash("country_allowlist"),
+            disclosure: None,
+            params: None,
         },
     ];
 
@@ -98,6 +133,8 @@ fn fixture_job(output_root: &str) -> Job {
         ListCommitment {
             values: vec!["DEU".into(), "FRA".into(), "USA".into(), "GBR".into()],
             source_sha256: "fixture-hash".to_string(),
+            declared_root: None,
+            declared_depth: None,
         },
     );
 
@@ -238,6 +275,7 @@ fn end_to_end_pipeline_produces_valid_bundle() {
         manifest.wallet_address.as_bytes(),
         manifest.epoch_days,
         &config_hash(),
+        manifest.secrets_kdf_version,
         &ct,
     )
     .unwrap();

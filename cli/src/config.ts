@@ -11,11 +11,15 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { ageDaysFromParams } from './paramsHash';
 import {
   CircuitName,
   Config,
+  Disclosure,
   EpochDaysSource,
   ListsEntry,
+  PredicateEntry,
+  PredicateInstance,
   PredicateSpec,
   Predicates,
   TierMap,
@@ -45,9 +49,20 @@ export const DEFAULT_PREDICATES_BY_FIELD: Record<string, PredicateSpec> = {
 /** Effective per-field predicate plan, with all defaults applied. */
 export type ResolvedPredicates = Record<string, PredicateSpec>;
 
+/**
+ * Flattened predicate instances in deterministic order. A field with a
+ * single predicate yields one instance named after the field; a field with
+ * several yields `<field>`, `<field>@<suffix>`, ... where the suffix is
+ * derived from the resolved parameters so the name is stable across runs
+ * and filesystem-safe.
+ */
+export type ResolvedInstances = PredicateInstance[];
+
 export interface ResolvedConfig {
   raw: Config;
   predicates: ResolvedPredicates;
+  /** One entry per leaf, including multi-instance predicates. */
+  instances: ResolvedInstances;
   tiers: Required<TierMap>;
   /** Resolved list-commitment files keyed by listId. */
   lists: Record<string, ResolvedList>;
@@ -104,7 +119,8 @@ export function resolveConfig(raw: Config): ResolvedConfig {
 
   const tiers = mergeTiers(raw.tiers);
   const predicates = resolvePredicates(raw);
-  const lists = resolveLists(raw, predicates);
+  const instances = resolveInstances(raw, tiers);
+  const lists = resolveLists(raw, instances);
 
   const masterKeyEnv = raw.security.masterKeyEnv || 'TRUSSET_KYC_MASTER_KEY';
   const signingKeyEnv = raw.manifest?.signingKeyEnv || 'TRUSSET_KYC_SIGNING_KEY';
@@ -117,6 +133,7 @@ export function resolveConfig(raw: Config): ResolvedConfig {
   return {
     raw,
     predicates,
+    instances,
     tiers,
     lists,
     masterKeyEnv,
@@ -169,6 +186,84 @@ function mergeTiers(provided?: TierMap): Required<TierMap> {
   };
 }
 
+/** Fields whose plaintext value is also written to the batch index CSV. */
+const PLAINTEXT_DISCLOSED_FIELDS = new Set(['country', 'investorType']);
+
+function disclosureFor(field: string, spec: PredicateSpec): Disclosure {
+  if (spec.circuit === 'commitment_only') return 'commitment_only';
+  if (PLAINTEXT_DISCLOSED_FIELDS.has(field)) return 'plaintext';
+  return 'predicate';
+}
+
+/**
+ * Suffix distinguishing multiple instances of one predicate over the same
+ * field. Derived from the resolved parameters so leaf names are stable and
+ * filesystem-safe (`dateOfBirth@7665d`, `investorType@PROFESSIONAL`).
+ */
+function instanceSuffix(spec: PredicateSpec, tiers: Required<TierMap>): string {
+  switch (spec.circuit) {
+    case 'age_threshold':
+      return `${ageDaysFromParams(spec.params)}d`;
+    case 'tier_threshold': {
+      const t = spec.params.minTier;
+      return typeof t === 'number' ? `tier${t}` : String(t).toUpperCase();
+    }
+    case 'set_membership':
+      return spec.params.list;
+    case 'preimage_knowledge':
+    case 'commitment_only':
+      return `max${spec.params?.maxValueBytes ?? 128}`;
+  }
+}
+
+const LEAF_NAME_SAFE = /^[A-Za-z0-9_.@-]+$/;
+
+/**
+ * Flatten `predicates` into one instance per leaf. The first instance for
+ * a field keeps the bare field name so existing single-predicate bundles
+ * are unchanged; later instances get a params-derived suffix.
+ */
+export function resolveInstances(c: Config, tiers: Required<TierMap>): ResolvedInstances {
+  const explicit = c.predicates ?? {};
+  const eligibleFields = new Set<string>(c.mapping.fields);
+  if (c.mapping.countryField) eligibleFields.add('country');
+  if (c.mapping.investorTypeField) eligibleFields.add('investorType');
+
+  const out: ResolvedInstances = [];
+  const seen = new Set<string>();
+  for (const field of eligibleFields) {
+    const entry: PredicateEntry | undefined =
+      explicit[field] ?? DEFAULT_PREDICATES_BY_FIELD[field];
+    if (!entry) {
+      throw new Error(
+        `config.predicates.${field} not provided and no default exists. Add an entry or remove "${field}" from mapping.fields.`,
+      );
+    }
+    const specs = Array.isArray(entry) ? entry : [entry];
+    if (specs.length === 0) {
+      throw new Error(`config.predicates.${field}: predicate array must not be empty`);
+    }
+    specs.forEach((spec, i) => {
+      validatePredicate(field, spec);
+      const leafName = i === 0 ? field : `${field}@${instanceSuffix(spec, tiers)}`;
+      if (!LEAF_NAME_SAFE.test(leafName)) {
+        throw new Error(
+          `config.predicates.${field}: derived leaf name "${leafName}" is not filesystem-safe`,
+        );
+      }
+      if (seen.has(leafName.toLowerCase())) {
+        throw new Error(
+          `config.predicates.${field}: duplicate leaf name "${leafName}" — two instances resolve to identical parameters`,
+        );
+      }
+      seen.add(leafName.toLowerCase());
+      out.push({ field, leafName, spec, disclosure: disclosureFor(field, spec) });
+    });
+  }
+  out.sort((a, b) => (a.leafName < b.leafName ? -1 : a.leafName > b.leafName ? 1 : 0));
+  return out;
+}
+
 function resolvePredicates(c: Config): ResolvedPredicates {
   const out: ResolvedPredicates = {};
   const explicit = c.predicates ?? {};
@@ -182,8 +277,12 @@ function resolvePredicates(c: Config): ResolvedPredicates {
   for (const field of eligibleFields) {
     const provided = explicit[field];
     if (provided) {
-      validatePredicate(field, provided);
-      out[field] = provided;
+      const first = Array.isArray(provided) ? provided[0] : provided;
+      if (!first) {
+        throw new Error(`config.predicates.${field}: predicate array must not be empty`);
+      }
+      validatePredicate(field, first);
+      out[field] = first;
       continue;
     }
     const fallback = DEFAULT_PREDICATES_BY_FIELD[field];
@@ -209,10 +308,14 @@ function resolvePredicates(c: Config): ResolvedPredicates {
 function validatePredicate(field: string, p: PredicateSpec): void {
   switch (p.circuit) {
     case 'preimage_knowledge':
+    case 'commitment_only':
       // params optional.
       return;
     case 'age_threshold':
-      if (!p.params || (!p.params.minAgeDays && !p.params.minAgeYears)) {
+      if (
+        !p.params ||
+        (p.params.minAgeDays === undefined && p.params.minAgeYears === undefined)
+      ) {
         throw new Error(`predicates.${field}: age_threshold requires params.minAgeYears or minAgeDays`);
       }
       return;
@@ -235,12 +338,12 @@ function validatePredicate(field: string, p: PredicateSpec): void {
 
 // ============================ list loading ============================
 
-function resolveLists(c: Config, predicates: ResolvedPredicates): Record<string, ResolvedList> {
+function resolveLists(c: Config, instances: ResolvedInstances): Record<string, ResolvedList> {
   // Collect list IDs referenced by set_membership predicates.
   const referenced = new Set<string>();
-  for (const pred of Object.values(predicates)) {
-    if (pred.circuit === 'set_membership') {
-      referenced.add(pred.params.list);
+  for (const inst of instances) {
+    if (inst.spec.circuit === 'set_membership') {
+      referenced.add(inst.spec.params.list);
     }
   }
   if (referenced.size === 0) return {};
@@ -312,6 +415,9 @@ function parseListCommitmentFile(
   if (!parsed.root || !parsed.sourceSha256) {
     throw new Error(`list_commitments ${expectedListId}: root and sourceSha256 are required`);
   }
+  if (typeof parsed.depth !== 'number' || parsed.depth < 1) {
+    throw new Error(`list_commitments ${expectedListId}: depth must be a positive number`);
+  }
   return {
     listId: parsed.listId,
     values: parsed.values,
@@ -326,10 +432,18 @@ function parseListCommitmentFile(
 /**
  * Canonical SHA-256 of the config used as HKDF input. Cosmetic fields are
  * stripped so reformatting output/cleanup options doesn't invalidate
- * determinism caches.
+ * determinism caches, while every field that affects bundle bytes is
+ * covered.
+ *
+ * Serialization sorts object keys at every depth so source-text key order
+ * never changes the hash. Before v2.1 this function passed a key array as
+ * `JSON.stringify`'s replacer, which filters keys at every nesting level
+ * and collapsed the payload to a constant: the hash was identical for all
+ * configs and the documented HKDF binding did not hold. Bundles issued
+ * before v2.1 therefore carry `secretsKdfVersion: 1` and the legacy
+ * constant; the decrypt path selects on that field.
  */
 function canonicalConfigHash(c: Config): string {
-  // Build a stripped copy with only fields that affect bundle bytes.
   const stripped = {
     mapping: c.mapping,
     predicates: c.predicates ?? null,
@@ -342,9 +456,23 @@ function canonicalConfigHash(c: Config): string {
       deterministic: c.security.deterministic,
     },
   };
-  const text = JSON.stringify(stripped, Object.keys(stripped).sort());
+  const text = canonicalJson(stripped);
   const h = require('crypto').createHash('sha256').update(text).digest('hex');
   return '0x' + h;
+}
+
+/** Deterministic JSON: object keys sorted at every depth, arrays in order. */
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  const parts: string[] = [];
+  for (const k of keys) {
+    if (obj[k] === undefined) continue;
+    parts.push(JSON.stringify(k) + ':' + canonicalJson(obj[k]));
+  }
+  return '{' + parts.join(',') + '}';
 }
 
 // ============================ show ============================

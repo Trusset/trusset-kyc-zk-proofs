@@ -38,6 +38,12 @@
 //!     set_root, asserted at the depth-dependent boundary row.
 //!   - Cross-phase witness binding (cols 12..24 constant) ensures the
 //!     same `witness_to_felts(value)` flows through both phases.
+//!   - Carry-chain binding (v3, circuitsVersion 3): at every merge setup
+//!     transition the incoming carry equals `state[4..8]` of the previous
+//!     row - the set_leaf digest for level 0, level k-1's merged output
+//!     for level k - and side/sibling/carry are constant within each
+//!     level. This is what makes the walk prove membership of the
+//!     committed value rather than of an arbitrary carry column.
 //!
 //! See [docs/STEP_2B_COMMITMENT_DESIGN.md](../../docs/STEP_2B_COMMITMENT_DESIGN.md)
 //! Stage 16+ addenda for the full design, validation history, and
@@ -116,7 +122,8 @@ mod periodic {
     pub const SETLEAF_TAG_START: usize = 23;
     pub const NODE_TAG_START: usize = 28;
     pub const SEL_SET_ROOT_BOUNDARY: usize = 33;
-    pub const TOTAL: usize = 34;
+    pub const SEL_LEVEL_CONST: usize = 34;
+    pub const TOTAL: usize = 35;
 }
 
 // =====================================================================
@@ -189,7 +196,9 @@ impl Air for SetAir {
         // ---- Transition constraint degrees (per-column) ----
         // Iteration log in docs/STEP_2B_COMMITMENT_DESIGN.md Stage 20:
         // state cols: with_cycles(7, [TL]); witness binding: new(1);
-        // side bit: with_cycles(2, [TL]); sibling/carry: new(1) (placeholders).
+        // side bit: with_cycles(2, [TL]); sibling/carry (v3, Stage 16
+        // binding constraints): degree-1 residuals gated by full-length
+        // periodic selectors → with_cycles(1, [TL]).
         let mut degrees: Vec<TransitionConstraintDegree> = Vec::with_capacity(TRACE_WIDTH);
 
         for _ in 0..12 {
@@ -211,10 +220,16 @@ impl Air for SetAir {
             vec![TRACE_LENGTH],
         ));
         for _ in 0..4 {
-            degrees.push(TransitionConstraintDegree::new(1));
+            degrees.push(TransitionConstraintDegree::with_cycles(
+                1,
+                vec![TRACE_LENGTH],
+            ));
         }
         for _ in 0..4 {
-            degrees.push(TransitionConstraintDegree::new(1));
+            degrees.push(TransitionConstraintDegree::with_cycles(
+                1,
+                vec![TRACE_LENGTH],
+            ));
         }
 
         // ---- Boundary assertion count ----
@@ -258,6 +273,7 @@ impl Air for SetAir {
         let sel_merge_setup_a = periodic_values[periodic::SEL_MERGE_SETUP_A];
         let sel_merge_absorb_b = periodic_values[periodic::SEL_MERGE_ABSORB_B];
         let sel_bind_row_0 = periodic_values[periodic::SEL_BIND_ROW_0];
+        let sel_level_const = periodic_values[periodic::SEL_LEVEL_CONST];
         let setleaf_tag: [E; 5] =
             std::array::from_fn(|i| periodic_values[periodic::SETLEAF_TAG_START + i]);
         let node_tag: [E; 5] =
@@ -411,22 +427,31 @@ impl Air for SetAir {
                 next[COL_WITNESS_START + c] - current[COL_WITNESS_START + c];
         }
 
-        // ---- Side bit boolean (col 24) at merge setup transitions ----
-        result[COL_SIDE_BIT] = sel_merge_setup_a * side_setup * (side_setup - E::ONE);
+        // ---- Side bit (col 24): boolean at merge setup transitions,
+        // constant within each level ----
+        result[COL_SIDE_BIT] = sel_merge_setup_a * side_setup * (side_setup - E::ONE)
+            + sel_level_const * (next[COL_SIDE_BIT] - current[COL_SIDE_BIT]);
 
-        // ---- Sibling cols (25..29) — placeholder (residual = 0) ----
-        // Side/sibling/carry constancy within a level is enforced by the
-        // trace structure: the AIR's merge_absorb_b reads sibling[i] at
-        // current row L+15, which equals sibling[i] at L (the setup row)
-        // because the prover witnesses them identically across the level.
-        // A dishonest prover varying them would break the merge_absorb_b
-        // → node_in_b → state[4..8] chain, which is detected by the
-        // set_root boundary.
+        // ---- Sibling cols (25..29): constant within each level so the
+        // setup_a and absorb_b halves of a merge consume the same
+        // sibling witness ----
         for c in 0..4 {
-            result[COL_SIBLING_START + c] = E::ZERO;
+            result[COL_SIBLING_START + c] =
+                sel_level_const * (next[COL_SIBLING_START + c] - current[COL_SIBLING_START + c]);
         }
+
+        // ---- Carry cols (29..33): chained and constant ----
+        // At every merge setup transition the incoming carry must equal
+        // the digest produced by the previous phase: the set_leaf digest
+        // (row 89) for level 0, and level k-1's merged output for level
+        // k. Within a level the carry is constant, so the absorb_b half
+        // reads the same bound digest. Together these chain the committed
+        // value's set_leaf digest through every merge into the set_root
+        // boundary.
         for c in 0..4 {
-            result[COL_CARRY_START + c] = E::ZERO;
+            result[COL_CARRY_START + c] = sel_merge_setup_a
+                * (next[COL_CARRY_START + c] - current[4 + c])
+                + sel_level_const * (next[COL_CARRY_START + c] - current[COL_CARRY_START + c]);
         }
     }
 
@@ -542,6 +567,10 @@ fn build_periodic_columns(set_depth: u8) -> Vec<Vec<BaseElement>> {
         let absorb_b_transition = MERKLE_ROW_START + 14 + k * MERGE_ROWS_PER_LEVEL;
         cols[periodic::SEL_MERGE_SETUP_A][setup_a_transition] = BaseElement::ONE;
         cols[periodic::SEL_MERGE_ABSORB_B][absorb_b_transition] = BaseElement::ONE;
+        let level_start = MERKLE_ROW_START + k * MERGE_ROWS_PER_LEVEL;
+        for row in level_start..(level_start + MERGE_ROWS_PER_LEVEL - 1) {
+            cols[periodic::SEL_LEVEL_CONST][row] = BaseElement::ONE;
+        }
     }
 
     let merkle_final_row = merkle_final_row_for_depth(set_depth);

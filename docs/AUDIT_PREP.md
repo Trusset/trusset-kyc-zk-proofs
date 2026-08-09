@@ -7,29 +7,40 @@ external auditor (Softstack / equivalent) or BaFin compliance review.
 
 ## Status disclosure
 
-The repository is at **Phase 2B Step-B (Stage 25, 2026-05-20)** —
-**Production ready**. Each of the four circuits ships a typed witness
-/ predicate-validation / commitment / proof-API layer plus a real
-Winterfell STARK proof with full in-AIR cryptographic soundness for
-its predicate. The workspace default features are `prod-proofs-*`;
-`manifest.mode` defaults to `"production"`; counterparty verifiers
-default to strict mode (`accept_stub = false`).
+The repository is at **v2.1.0** - production ready. Each of the four
+circuits ships a typed witness / predicate-validation / commitment /
+proof-API layer plus a real Winterfell STARK proof. The workspace default
+features are `prod-proofs-*`; `manifest.mode` defaults to `"production"`;
+counterparty verifiers default to strict mode (`accept_stub = false`).
+
+v2.1.0 changed four things an auditor should read before the matrix
+below:
+
+1. **`set_membership` soundness (circuitsVersion 3).** The in-AIR Merkle
+   walk previously left its carry and sibling columns unconstrained, so
+   it proved "some valid path exists in this public tree" rather than
+   "the committed value is in it". The binding constraints now exist; the
+   frozen pre-v2.1 AIR is retained for verifying existing bundles, whose
+   `set_membership` proofs carry the weaker property. See §12.10.
+2. **Key hierarchy (`secretsKdfVersion: 2`).** The master key is now a
+   key-wrapping key. Nonces derive from an independent per-subject key.
+   See §12.2 and §12.7.
+3. **Merkle construction (`merkleVersion: 2`).** Power-of-two padding
+   with a domain-separated padding leaf, and leaf count plus arity bound
+   into the root. See §12.1.
+4. **`preimage_knowledge` honesty.** Its in-AIR length predicate does not
+   constrain the witness and never did. This is now documented rather
+   than claimed as soundness, and `commitment_only` exists as the
+   truthful alternative. See §12.10.
 
 Development bundles built with `npm start -- --skip-proofs` retain
-`mode: "stub"` with zero-byte proofs and verify only under the
-explicit `--accept-stub` flag — they are intended for CI smoke and
-operator-internal testing, not production.
-
-This document audits Phase 2B Step-B (Stage 25). All security
-requirements including the §12.10 soundness target are met. The
-historical Phase 2A Step-A status (placeholder proofs, mode = "stub"
-default) and the Phase 2B Step-A status (real Winterfell plumbing
-with placeholder constraints) are preserved in the per-section
-"Status" rows below for traceability.
+`mode: "stub"` with zero-byte proofs and verify only under the explicit
+`--accept-stub` flag - they are for CI smoke and operator-internal
+testing, not production.
 
 ## Spec §12 traceability matrix
 
-### §12.1 — Domain separation
+### §12.1 - Domain separation
 
 > Every Rescue call uses one of the named tags above. No tag reuse. Add
 > a compile-time assertion that all tags are pairwise distinct.
@@ -37,10 +48,10 @@ with placeholder constraints) are preserved in the per-section
 | | |
 |---|---|
 | **Implementation** | [`circuits/common/src/domain.rs`](../circuits/common/src/domain.rs). Seven 32-byte ASCII tags (`LEAF`, `NODE`, `PUB-DIGEST`, `PRF-DIGEST`, `SET-LEAF`, `SET-NODE`, `COMMIT`). C(7,2) = 21 `const_assert!` pairs |
-| **Audit check** | `cargo test -p trusset-circuits-common domain::tests` — runtime pairwise-distinct + prefix invariant |
+| **Audit check** | `cargo test -p trusset-circuits-common domain::tests` - runtime pairwise-distinct + prefix invariant |
 | **Status** | ✓ |
 
-### §12.2 — Nonces
+### §12.2 - Nonces
 
 > 32 bytes, drawn from `getrandom`. One nonce per field per subject.
 > Never reuse across subjects. Never derive from low-entropy data.
@@ -48,11 +59,11 @@ with placeholder constraints) are preserved in the per-section
 | | |
 |---|---|
 | **Implementation** | [`circuits/common/src/seed.rs::derive_leaf_seed`](../circuits/common/src/seed.rs). HKDF-SHA256(subject_seed, info=field_name‖circuit_id‖params_hash). `subject_seed` is itself HKDF of (master_key, subject_id, epoch_days, config_hash). |
-| **Audit note** | Spec said "drawn from `getrandom`"; the plan refined this to "drawn deterministically from a high-entropy master key via HKDF" so reruns produce byte-identical bundles. The master key itself must be 32 random bytes — the operator's responsibility. |
-| **Audit check** | `cargo test -p trusset-circuits-common seed::tests` — determinism + uniqueness across (subject, epoch, config, version, field, circuit, params) |
+| **Audit note** | Spec said "drawn from `getrandom`"; the plan refined this to "drawn deterministically from a high-entropy master key via HKDF" so reruns produce byte-identical bundles. The master key itself must be 32 random bytes - the operator's responsibility. |
+| **Audit check** | `cargo test -p trusset-circuits-common seed::tests` - determinism + uniqueness across (subject, epoch, config, version, field, circuit, params) |
 | **Status** | ✓ |
 
-### §12.3 — Replay protection
+### §12.3 - Replay protection
 
 > `walletAddress` and `epochDays` are public inputs to every circuit
 > and bound into every leaf hash.
@@ -63,7 +74,7 @@ with placeholder constraints) are preserved in the per-section
 | **Audit check** | `leaf::tests::leaf_hash_changes_with_each_input_component` exercises both. |
 | **Status** | ✓ |
 
-### §12.4 — Circuit ID binding
+### §12.4 - Circuit ID binding
 
 > `circuit_id` is a public input of every circuit and appears in the
 > leaf hash. A proof for `age_threshold` cannot be replayed as a
@@ -71,11 +82,11 @@ with placeholder constraints) are preserved in the per-section
 
 | | |
 |---|---|
-| **Implementation** | [`circuits/common/src/circuit_id.rs`](../circuits/common/src/circuit_id.rs) — stable u8 enum {1, 2, 3, 4}. Bound into `compute_leaf_hash` and into HKDF info for per-leaf seed. The `StubProof` carries the circuit_id byte; the verifier rejects mismatches. |
+| **Implementation** | [`circuits/common/src/circuit_id.rs`](../circuits/common/src/circuit_id.rs) - stable u8 enum {1, 2, 3, 4}. Bound into `compute_leaf_hash` and into HKDF info for per-leaf seed. The `StubProof` carries the circuit_id byte; the verifier rejects mismatches. |
 | **Audit check** | `verifier_rejects_swapped_circuit_id` in [`verifier/tests/round_trip_with_prover.rs`](../verifier/tests/round_trip_with_prover.rs) demonstrates the relabel-attack failure path. |
 | **Status** | ✓ |
 
-### §12.5 — List commitments
+### §12.5 - List commitments
 
 > Every set used in `set_membership` has its Rescue root pinned in the
 > manifest along with the SHA-256 of the source list file.
@@ -86,7 +97,7 @@ with placeholder constraints) are preserved in the per-section
 | **Audit check** | `cli_emits_valid_json_for_country_allowlist` + `prover_set_tree_matches_list_commit_root` (cross-tool agreement) + `verifier_rejects_swapped_set_root` (post-hoc tamper). |
 | **Status** | ✓ |
 
-### §12.6 — Constant-time secret handling
+### §12.6 - Constant-time secret handling
 
 > Use `zeroize` for buffers holding values or nonces. No `format!`, no
 > `Debug` impls that print secrets.
@@ -94,11 +105,11 @@ with placeholder constraints) are preserved in the per-section
 | | |
 |---|---|
 | **Implementation** | Every `Witness` struct in `circuits/*` derives `Zeroize` on drop. `ProvedLeaf.plaintext_value` and `.nonce` wrapped in `Zeroizing`. `SigningSecret`'s `Debug` impl returns `"SigningSecret(<redacted>)"`. |
-| **Audit note** | The constant-time claim is bounded: Winterfell's field arithmetic is not constant-time. The mitigation is that proving is an offline batch operation, not a real-time secret-handling protocol — operators run it on a private machine. |
-| **Audit check** | `grep -r "Debug" -- circuits prover bundle-format | grep -i "secret\|witness\|nonce"` — manual review point. |
+| **Audit note** | The constant-time claim is bounded: Winterfell's field arithmetic is not constant-time. The mitigation is that proving is an offline batch operation, not a real-time secret-handling protocol - operators run it on a private machine. |
+| **Audit check** | `grep -r "Debug" -- circuits prover bundle-format | grep -i "secret\|witness\|nonce"` - manual review point. |
 | **Status** | ✓ (with the audit note) |
 
-### §12.7 — Encryption at rest
+### §12.7 - Encryption at rest
 
 > `secrets.enc` is the only place plaintext-equivalent material lives
 > on disk. libsodium secretbox, key from HKDF-SHA256 over an
@@ -106,11 +117,11 @@ with placeholder constraints) are preserved in the per-section
 
 | | |
 |---|---|
-| **Implementation** | [`prover/src/encrypt.rs`](../prover/src/encrypt.rs) uses `xsalsa20-poly1305` (libsodium-compatible). HKDF-derived key + nonce per subject. Master key from env var per spec §17 ("HSM integration is a separate workstream — for now, we provide the master key via env var"). |
+| **Implementation** | [`prover/src/encrypt.rs`](../prover/src/encrypt.rs) uses `xsalsa20-poly1305` (libsodium-compatible). HKDF-derived key + nonce per subject. Master key from env var per spec §17 ("HSM integration is a separate workstream - for now, we provide the master key via env var"). |
 | **Audit check** | `encrypt::tests::encrypt_decrypt_roundtrip` and 5 negative cases (wrong key, tampered ciphertext, too short, etc.). |
 | **Status** | ✓ |
 
-### §12.8 — Reproducibility
+### §12.8 - Reproducibility
 
 > Two runs over the same input on different machines with the same
 > config and the same HSM key produce byte-identical bundles, with the
@@ -123,7 +134,7 @@ with placeholder constraints) are preserved in the per-section
 | **Audit check** | [`tests/e2e/canary.sh`](../tests/e2e/canary.sh) runs the full pipeline twice in clean temp dirs and asserts byte-equality modulo `createdAt`. Plus `pipeline_is_byte_deterministic_across_two_runs` in `prover/tests/end_to_end.rs`. |
 | **Status** | ✓ |
 
-### §12.9 — No outbound network
+### §12.9 - No outbound network
 
 > The prover binary makes zero network syscalls. Enforce in CI by
 > running the test suite with network namespacing.
@@ -131,10 +142,10 @@ with placeholder constraints) are preserved in the per-section
 | | |
 |---|---|
 | **Implementation** | `prover/` dependencies are pure-Rust crates; none open sockets at runtime. No `reqwest`, `tokio-net`, etc. anywhere in the workspace. |
-| **Audit check** | `cargo tree -p trusset-prover` — review the dep tree manually. The network-namespacing CI step is a future operational concern, not a code-level guarantee. |
+| **Audit check** | `cargo tree -p trusset-prover` - review the dep tree manually. The network-namespacing CI step is a future operational concern, not a code-level guarantee. |
 | **Status** | ✓ (verified by dependency audit; network-namespacing CI is recommended but not currently configured) |
 
-### §12.10 — Soundness target
+### §12.10 - Soundness target
 
 > 100 bits of conjectured security per Winterfell's default parameters.
 > Document the FRI parameters (queries, blowup, grinding) and justify
@@ -148,7 +159,9 @@ with placeholder constraints) are preserved in the per-section
 | **Status (Phase 2B Step-B, 2026-05-20, Stage 22 promotion)** | ◐ → **✓ four of four circuits at full in-AIR cryptographic soundness**. `preimage_knowledge` Stage 17 production AIR landed: 28-col × 64-row trace enforces commitment opening + 8-bit boolean decomposition of `value_len_bytes` and `slack = AIR_MAX_VALUE_BYTES - value_len_bytes`, with `AIR_MAX_VALUE_BYTES = 128` hardcoded as a workspace constant. The bundle wire format is unchanged: `PublicInputs::canonical_bytes()` still just the commitment digest; no operator action required. Production `prove_verify_roundtrip` green; AIR rejects oversize lengths and wrong-len claims. **All four circuit predicates are now enforced cryptographically inside the AIR rather than by trusted off-AIR `validate()` code.** Outstanding §12.10 work: `manifest.mode` flip from `"stub"` to `"production"` (Stage 18, mechanical), refreshed PERFORMANCE.md, audit-document review. |
 | **Status (Phase 2B Step-B, 2026-05-20, Stage 23 production-mode flip)** | **✓ §12.10 COMPLETE**. Workspace defaults flipped to `prod-proofs-*`; production builds now emit `manifest.mode == "production"` and `manifest.stark.library == "winterfell-0.13"` by default. Verifier strict mode (`accept_stub = false`) is the new default with `--strict` retained as a no-op for backward compatibility; the new `--accept-stub` flag opts in to development bundles. Workspace test sweep: **411 / 411 pass in release mode**. Determinism canary green (byte-identical bundles across two runs). The skip-proofs development path still emits `mode: "stub"` with zero-byte proofs; the verifier short-circuits AIR dispatch for empty proof bytes so policy rejection (mode_acceptable) is the visible failure rather than a cryptographic deserialization error. **The cryptographic + mode-flip portion of Phase 2B Step-B is COMPLETE.** Repository is ready for external audit review. |
 
-### §12.11 — Memory
+| **Status (v2.1.0)** | **✓ COMPLETE, with two corrections to the prior claim.** (a) `set_membership` was NOT fully sound before this release: the Merkle-walk carry and sibling columns were placeholder residuals, so a prover could commit to a non-member and replay any real member's path. circuitsVersion 3 adds the carry-chain binding; the regression test `v3_rejects_nonmember_grafted_onto_member_walk_while_v2_accepts` builds that exact forgery and shows v2 accepting it and v3 rejecting it. Bundles with `circuitsVersion: 2` verify against the frozen AIR and carry the weaker property. (b) `preimage_knowledge`'s "full in-AIR predicate" claim was wrong: its 16 bit columns are constant, boolean, and unconnected to the witness, so `len_bits = 0, slack_bits = 128` satisfies the row-0 constraint for any value. The effective length bound is off-AIR in `validate()`. This is now documented in CIRCUITS.md rather than claimed, and `commitment_only` is the truthful leaf mode for fields with no predicate worth proving. Parameters unchanged: blowup 16, queries 27, grinding 16, Quadratic extension, FRI folding 4, remainder max degree 7, Linear batching. `conjectured_security_bits()` evaluates the Winterfell estimate as a min rather than a sum and yields **113 bits** against the published 100-bit floor, asserted at compile time and again at prover startup (`E_WEAK_PROOF_OPTIONS`). Workspace sweep: **465 / 465 pass in release mode**. |
+
+### §12.11 - Memory
 
 > Cap peak prover memory at 4 GB per leaf to fit on commodity laptops.
 > Test on a 16 GB machine end-to-end with the largest realistic input
@@ -157,9 +170,9 @@ with placeholder constraints) are preserved in the per-section
 | | |
 |---|---|
 | **Status (Phase 2A)** | Deferred. The placeholder proofs used < 1 MB per leaf. Phase 2B real measurements pending. |
-| **Status (Phase 2B Step-B, Stage 29, 2026-05-20)** | **✓ PASS — well below 4 GB cap.** Real measurement via [scripts/memory_profile.sh](../scripts/memory_profile.sh) on macOS Intel x86_64 with production-default builds: **N=5 subjects → peak RSS 87.8 MB** (17.57 MB/subject, dominated by Node + binary constant footprint); **N=50 subjects → peak RSS 112.7 MB** (2.25 MB/subject — the constant footprint amortizes). Marginal per-subject delta is ~0.5 MB, indicating the prover correctly releases one trace before allocating the next rather than accumulating state. At this trend a 1000-subject batch projects to roughly 600 MB peak RSS — **comfortably within the 4 GB spec budget** and runnable on a 16 GB laptop. Wall time at N=50 is 5.3 s/subject (which lines up with §13.6 informational baseline). Run `N=1000 bash scripts/memory_profile.sh` for the full spec measurement (~90 min). |
+| **Status (Phase 2B Step-B, Stage 29, 2026-05-20)** | **✓ PASS - well below 4 GB cap.** Real measurement via [scripts/memory_profile.sh](../scripts/memory_profile.sh) on macOS Intel x86_64 with production-default builds: **N=5 subjects → peak RSS 87.8 MB** (17.57 MB/subject, dominated by Node + binary constant footprint); **N=50 subjects → peak RSS 112.7 MB** (2.25 MB/subject - the constant footprint amortizes). Marginal per-subject delta is ~0.5 MB, indicating the prover correctly releases one trace before allocating the next rather than accumulating state. At this trend a 1000-subject batch projects to roughly 600 MB peak RSS - **comfortably within the 4 GB spec budget** and runnable on a 16 GB laptop. Wall time at N=50 is 5.3 s/subject (which lines up with §13.6 informational baseline). Run `N=1000 bash scripts/memory_profile.sh` for the full spec measurement (~90 min). |
 
-### §12.12 — Audit logging
+### §12.12 - Audit logging
 
 > Every run writes a structured `audit.log` in the output directory:
 > timestamps, config hash, list commitment hashes, library versions,
@@ -168,7 +181,7 @@ with placeholder constraints) are preserved in the per-section
 | | |
 |---|---|
 | **Status (Phase 2A)** | ✗ Not yet implemented. NDJSON to stdout only. |
-| **Status (Phase 2B Step-B, Stage 31, 2026-05-20)** | **✓ PASS.** `<output_root>/audit.log` is written on every run by [prover/src/audit.rs](../prover/src/audit.rs). One-line NDJSON per event; pinned schema (6 event types: `run_start`, `subject_start`, `leaf_proved`, `subject_done`, `subject_failed`, `run_done`). The `run_start` line carries the spec's full metadata payload: ISO-8601 UTC timestamp, library versions (trusset_prover + winterfell_air/prover/verifier pinned to 0.13.1), config_hash, list_commitments (per `list_id` → source SHA-256), skip_proofs flag, subject_count. The spec's "no PII" requirement is enforced: subject_id (a public on-chain wallet address) is recorded, but no field values appear anywhere, and `subject_failed` records the stable `error_code` (e.g. `E_AGE_BELOW_MIN`) **without** the human-readable `message` (messages can contain numeric context like "age 17 < 18" that, while not strictly PII, would leak attribute values). Schema is locked by `audit_event_schema_is_pinned` test. Determinism canary excludes `audit.log` by design (it carries wall-clock timestamps and lives outside the per-bundle `0x*` directories the canary inspects). |
+| **Status (Phase 2B Step-B, Stage 31, 2026-05-20)** | **✓ PASS.** `<output_root>/audit.log` is written on every run by [prover/src/audit.rs](../prover/src/audit.rs). One-line NDJSON per event; pinned schema (6 event types: `run_start`, `subject_start`, `leaf_proved`, `subject_done`, `subject_failed`, `run_done`; as of v2.1.0 `leaf_proved` is genuinely emitted with real `proof_bytes` and `ms` - before that it was declared on both sides but never written). The `run_start` line carries the spec's full metadata payload: ISO-8601 UTC timestamp, library versions (trusset_prover + winterfell_air/prover/verifier pinned to 0.13.1), config_hash, list_commitments (per `list_id` → source SHA-256), skip_proofs flag, subject_count. The spec's "no PII" requirement is enforced: subject_id (a public on-chain wallet address) is recorded, but no field values appear anywhere, and `subject_failed` records the stable `error_code` (e.g. `E_AGE_BELOW_MIN`) **without** the human-readable `message` (messages can contain numeric context like "age 17 < 18" that, while not strictly PII, would leak attribute values). Schema is locked by `audit_event_schema_is_pinned` test. Determinism canary excludes `audit.log` by design (it carries wall-clock timestamps and lives outside the per-bundle `0x*` directories the canary inspects). |
 
 ## Test surface for an external auditor
 
@@ -183,6 +196,11 @@ rustup target list --installed | grep wasm32-unknown-unknown
 # Build everything
 npm install
 
+# Static gates
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+(cd cli && npx tsc --noEmit)
+
 # Full test sweep
 cargo test --workspace
 (cd cli && npm test)
@@ -190,16 +208,40 @@ cargo test --workspace
 # Determinism canary
 bash tests/e2e/canary.sh
 
-# Cross-language KAT (refresh + check)
+# Native vs WASM verifier parity
+bash tests/e2e/wasm_parity.sh
+
+# Eight-scenario end-to-end matrix
+bash tests/e2e/v21_matrix.sh
+
+# Cross-language KAT
 cargo test -p trusset-prover --test params_hash_kat
 ```
 
-Expected outcomes (as of Phase 2B Step-B, Stage 28, 2026-05-20):
-- **414 Rust tests pass** (`cargo test --workspace` and `cargo test --workspace --release` both at 414/414)
-- 11 TS tests pass
+Expected outcomes at v2.1.0:
+
+- **465 Rust tests pass** (`cargo test --workspace`, debug and release)
+- **12 TS tests pass**
 - Canary asserts byte-identical bundles between two runs
-- KAT shows no drift between Rust and TS `params_hash` for any vector
-- `bash scripts/ci_smoke.sh` exercises fmt + clippy + workspace debug + workspace release + per-circuit `--features prod-proofs-*` sweep, end-to-end
+- WASM parity asserts byte-identical `VerifyReport` JSON, valid and
+  tampered
+- The e2e matrix reports **84 assertions, 0 failures**
+- KAT shows no drift between Rust and TS `params_hash` across **18
+  vectors**, including string tier names and `minAgeYears`
+- `bash scripts/ci_smoke.sh` exercises fmt + clippy + workspace debug +
+  workspace release + per-circuit `--features prod-proofs-*` sweep
+
+Tests an auditor should read first, because they encode the claims that
+matter most:
+
+| Test | File | Claim |
+|---|---|---|
+| `v3_rejects_nonmember_grafted_onto_member_walk_while_v2_accepts` | `circuits/set_membership/src/lib.rs` | The allowlist soundness fix is real and the gap it closes was real |
+| `v1_duplicate_last_leaf_ambiguity_exists_and_v2_removes_it` | `bundle-format/src/merkle.rs` | The Merkle ambiguity was real and v2 removes it |
+| `v200_manifest_reserializes_byte_identically` | `bundle-format/tests/v200_backward_compat.rs` | v2.0.0 signatures survive the v2.1 schema |
+| `empty_proof_on_a_proving_leaf_is_rejected_in_production_mode` | `verifier/tests/v21_anchors_and_policy.rs` | A signed, internally consistent bundle with a stripped proof still fails |
+| `no_anchor_never_passes` | `verifier/tests/v21_anchors_and_policy.rs` | Verification without an anchor is not a pass |
+| `rekey_rotates_the_master_key_without_touching_proofs_or_root` | `prover/tests/v21_features.rs` | Key rotation does not disturb the signed artifacts |
 
 ## Reproducible build inputs
 
@@ -213,14 +255,14 @@ Expected outcomes (as of Phase 2B Step-B, Stage 28, 2026-05-20):
 
 ## Open items beyond Phase 2B Step-B
 
-Closed in Phase 2B Step-B (Stages 1–31, 2026-05-20):
-- ~~Phase 2B real AIR work (spec §12.10)~~ — all four circuits ship full in-AIR predicate soundness; production mode flip complete
-- ~~Memory profiling on a 1000-subject batch (spec §12.11)~~ — N=50 baseline captured (87.8 MB → 112.7 MB scaling), projects ~600 MB at N=1000, well within 4 GB cap
-- ~~`audit.log` emission (spec §12.12)~~ — Stage 31: NDJSON `<output_root>/audit.log` with timestamps, library versions, config_hash, list_commitments; PII-free (`subject_failed` records error_code only, no message)
+Closed in Phase 2B Step-B (Stages 1-31, 2026-05-20):
+- ~~Phase 2B real AIR work (spec §12.10)~~ - all four circuits ship full in-AIR predicate soundness; production mode flip complete
+- ~~Memory profiling on a 1000-subject batch (spec §12.11)~~ - N=50 baseline captured (87.8 MB → 112.7 MB scaling), projects ~600 MB at N=1000, well within 4 GB cap
+- ~~`audit.log` emission (spec §12.12)~~ - Stage 31: NDJSON `<output_root>/audit.log` with timestamps, library versions, config_hash, list_commitments; PII-free (`subject_failed` records error_code only, no message)
 
 Still open:
-- Network-namespacing CI configuration (spec §12.9) — operational hardening
-- HSM integration (spec §17 — separate workstream)
+- Network-namespacing CI configuration (spec §12.9) - operational hardening
+- HSM integration (spec §17 - separate workstream)
 - Post-quantum manifest signing migration (not in spec; future)
 
 Phase 2C (not Phase 2B-blocking, not soundness-affecting):

@@ -63,12 +63,20 @@ export async function runProver(
   // Pass master/signing keys through using the canonical env var names the
   // Rust binary expects (TRUSSET_KYC_MASTER_KEY / TRUSSET_KYC_SIGNING_KEY),
   // regardless of what the config calls them on the TS side.
-  const childEnv = {
+  // `TRUSSET_KYC_DETERMINISTIC=1` arms the prover's entropy guard: any OS
+  // entropy draw during a deterministic run aborts instead of producing a
+  // bundle that cannot be reproduced.
+  const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     TRUSSET_KYC_MASTER_KEY: masterKey,
     TRUSSET_KYC_SIGNING_KEY: signingKey,
     RUST_BACKTRACE: '0',
   };
+  if (job.deterministic) {
+    childEnv.TRUSSET_KYC_DETERMINISTIC = '1';
+  } else {
+    delete childEnv.TRUSSET_KYC_DETERMINISTIC;
+  }
 
   const child = spawn(binary, [], {
     cwd: opts.cwd ?? process.cwd(),
@@ -113,6 +121,19 @@ export async function runProver(
   return new Promise<ProverInvocationResult>((resolve, reject) => {
     child.on('error', reject);
     child.on('close', (code) => {
+      // Flush a trailing line that arrived without a final newline, so a
+      // prover killed mid-write does not silently lose its last event.
+      const tail = stdoutBuf.trim();
+      if (tail) {
+        try {
+          const parsed = JSON.parse(tail) as ProverEvent;
+          events.push(parsed);
+          opts.onEvent?.(parsed);
+        } catch {
+          process.stderr.write(`[prover] (non-JSON line): ${tail}\n`);
+        }
+        stdoutBuf = '';
+      }
       const done = events.find((e): e is Extract<ProverEvent, { event: 'done' }> => e.event === 'done');
       resolve({
         exitCode: code ?? -1,

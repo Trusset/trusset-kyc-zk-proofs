@@ -14,12 +14,19 @@ export interface VerifyReport {
   signature_valid: boolean;
   merkle_root_valid: boolean;
   leaves: { field: string; circuit: string; pass: boolean; reason: string | null }[];
+  /** Anchor(s) used: `public_key`, `root`, `public_key+root`, or `none`. */
+  anchor: string;
+  root_anchor_valid: boolean;
+  manifest_version: string;
   overall_pass: boolean;
 }
 
 export interface VerifyInvocation {
   bundlePath: string;
-  publicKeyHex: string;
+  /** Operator ed25519 public key. Optional when `rootHex` is supplied. */
+  publicKeyHex?: string;
+  /** kycHash read from chain. Optional when `publicKeyHex` is supplied. */
+  rootHex?: string;
   /**
    * Accept bundles with `manifest.mode == "stub"` (development bundles
    * built with `--skip-proofs`). Default is to reject — strict mode is
@@ -39,13 +46,9 @@ export interface VerifyResult {
 
 export async function runVerify(args: VerifyInvocation): Promise<VerifyResult> {
   const binary = args.verifierPath ?? locateVerifier();
-  const cliArgs = [
-    '--bundle',
-    args.bundlePath,
-    '--public-key',
-    args.publicKeyHex,
-    '--json',
-  ];
+  const cliArgs = ['--bundle', args.bundlePath, '--json'];
+  if (args.publicKeyHex) cliArgs.push('--public-key', args.publicKeyHex);
+  if (args.rootHex) cliArgs.push('--root', args.rootHex);
   if (args.acceptStub) cliArgs.push('--accept-stub');
 
   return new Promise<VerifyResult>((resolve, reject) => {
@@ -92,16 +95,23 @@ export function locateVerifier(): string {
 
 export function formatHumanReport(report: VerifyReport, bundlePath: string): string {
   const check = (ok: boolean) => (ok ? '[ok]' : '[FAIL]');
+  // An anchor the caller did not supply is not a failure.
+  const usedKey = report.anchor === 'public_key' || report.anchor === 'public_key+root';
+  const usedRoot = report.anchor === 'root' || report.anchor === 'public_key+root';
+  const anchorCheck = (supplied: boolean, ok: boolean) => (supplied ? check(ok) : '[n/a]');
   const lines: string[] = [];
   lines.push(`Bundle:    ${bundlePath}`);
   lines.push(`Wallet:    ${report.wallet_address}`);
   lines.push(`kycHash:   ${report.kyc_hash}`);
   lines.push(`Leaves:    ${report.leaf_count}`);
+  lines.push(`Version:   ${report.manifest_version}`);
+  lines.push(`Anchor:    ${report.anchor}`);
   lines.push('');
   lines.push(`  layout_ok:              ${check(report.layout_ok)}`);
   lines.push(`  mode_acceptable:        ${check(report.mode_acceptable)}`);
   lines.push(`  kyc_hash_file_matches:  ${check(report.kyc_hash_file_matches)}`);
-  lines.push(`  signature_valid:        ${check(report.signature_valid)}`);
+  lines.push(`  signature_valid:        ${anchorCheck(usedKey, report.signature_valid)}`);
+  lines.push(`  root_anchor_valid:      ${anchorCheck(usedRoot, report.root_anchor_valid)}`);
   lines.push(`  merkle_root_valid:      ${check(report.merkle_root_valid)}`);
   lines.push('');
   lines.push('Per-leaf:');

@@ -14,7 +14,7 @@ import {
   BundleSummary,
   FailureRow,
 } from './bundleWriter';
-import { buildJob } from './jobSpec';
+import { buildJobWithSkips } from './jobSpec';
 import { validateRecords } from './recordValidation';
 import { runProver, ProverEvent } from './spawnProver';
 import { formatHumanReport, runVerify } from './verify';
@@ -31,7 +31,7 @@ const program = new Command();
 program
   .name('trusset-kyc')
   .description('KYC zk-STARK hashing tool for Trusset tokenization infrastructure')
-  .version('2.0.0');
+  .version('2.1.0');
 
 // ============================= hash (default) =============================
 
@@ -40,10 +40,9 @@ program
   .description('Process /input, prove each subject, write bundles to /output')
   .option('--raw', 'Omit the index column from the batched CSV')
   .option('--skip-proofs', 'Development mode: emit zero-byte proofs, mark manifest mode:"stub" (default since Stage 18 is mode:"production" with real Winterfell STARK proofs)')
-  .option('--isolate', 'Spawn one prover process per subject (debugging)')
-  .option('--no-deterministic', 'Allow OS randomness for nonces (debugging)')
+  .option('--no-deterministic', 'Allow OS randomness for per-subject keys (debugging); stamps deterministic:false into the manifest')
   .option('--json', 'Emit structured JSON to stdout instead of human progress')
-  .action(async (options: { raw?: boolean; skipProofs?: boolean; isolate?: boolean; deterministic: boolean; json?: boolean }) => {
+  .action(async (options: { raw?: boolean; skipProofs?: boolean; deterministic: boolean; json?: boolean }) => {
     try {
       const rc = loadConfig();
       ensureDirectories();
@@ -77,11 +76,46 @@ program
 
       let successes: BundleSummary[] = [];
       let proverFailures: FailureRow[] = [];
+      let jobFailures: FailureRow[] = [];
 
       if (validation.valid.length > 0) {
-        const job = buildJob(validation.valid, rc, outputDir(), {
+        const built = buildJobWithSkips(validation.valid, rc, outputDir(), {
           skipProofs: !!options.skipProofs,
+          deterministic: options.deterministic,
         });
+        const job = built.job;
+        jobFailures = built.skipped.map((s) => ({
+          walletAddress: s.walletAddress,
+          stage: 'validation' as const,
+          errorCode: s.errorCode,
+          message: s.message,
+        }));
+        if (!options.json) {
+          for (const f of jobFailures) {
+            console.log(`  ✘  ${f.walletAddress}  [${f.errorCode}] ${f.message}`);
+          }
+        }
+        if (job.subjects.length === 0) {
+          const allFailures = [...validationFailures, ...jobFailures];
+          const failuresPath = writeFailures(allFailures);
+          if (options.json) {
+            console.log(
+              JSON.stringify({
+                ok: 0,
+                failed: allFailures.length,
+                validationFailed: allFailures.length,
+                proverFailed: 0,
+                indexPath: '',
+                failuresPath,
+                successes: [],
+              }),
+            );
+          } else {
+            console.log('No valid records to send to the prover; all rows quarantined.');
+            if (failuresPath) console.log(`Failures:  ${failuresPath} (${allFailures.length})`);
+          }
+          process.exit(1);
+        }
         const result = await runProver(job, rc, {
           onEvent: (e: ProverEvent) => {
             if (!options.json) {
@@ -114,6 +148,14 @@ program
           },
         });
         proverFailures = failuresFromProver(result.events);
+        // A prover that dies before emitting `done` (OOM, SIGKILL, panic)
+        // must not read as a clean run just because no subject_failed
+        // event arrived.
+        if (!result.done && successes.length === 0) {
+          throw new Error(
+            `prover exited with code ${result.exitCode} without completing the batch`,
+          );
+        }
       } else if (!options.json) {
         console.log('No valid records to send to the prover; all rows quarantined.');
       }
@@ -125,7 +167,7 @@ program
         rc.raw.output.includeIndex,
       );
       const indexPath = writeBatchedIndex(indexRows, rc, !!options.raw);
-      const allFailures = [...validationFailures, ...proverFailures];
+      const allFailures = [...validationFailures, ...jobFailures, ...proverFailures];
       const failuresPath = writeFailures(allFailures);
 
       if (rc.raw.security.clearInputAfterProcessing) {
@@ -150,7 +192,6 @@ program
       }
       // Exit codes: 0 ok, 2 partial, 1 batch-aborting.
       const totalAttempted = validation.valid.length + validation.failed.length;
-      const allFailed = allFailures.length > 0 && successes.length === 0;
       if (allFailures.length === 0 && totalAttempted > 0) {
         process.exit(0);
       } else if (successes.length > 0) {
@@ -174,16 +215,25 @@ program
 program
   .command('verify <wallet>')
   .description('Verify a per-subject bundle in /output against a pinned public key')
-  .requiredOption('--public-key <hex>', 'Operator ed25519 public key (32 bytes hex)')
+  .option('--public-key <hex>', 'Operator ed25519 public key (32 bytes hex) — for offline bundles')
+  .option('--root <hex>', 'kycHash read from chain (0x + 64 hex) — anchors the bundle to the published root')
   .option('--strict', 'No-op (strict mode is the default since Stage 18)')
   .option('--accept-stub', 'Accept bundles with mode == "stub" (development/CI bundles built with --skip-proofs)')
   .option('--json', 'Emit JSON report')
-  .action(async (wallet: string, options: { publicKey: string; strict?: boolean; acceptStub?: boolean; json?: boolean }) => {
+  .action(async (wallet: string, options: { publicKey?: string; root?: string; strict?: boolean; acceptStub?: boolean; json?: boolean }) => {
     try {
+      if (!options.publicKey && !options.root) {
+        const message =
+          'at least one anchor is required: pass --root <0x64-hex> (on-chain root) or --public-key <hex> (offline bundles)';
+        if (options.json) console.log(JSON.stringify({ error: message }));
+        else console.error('Error:', message);
+        process.exit(64);
+      }
       const bundlePath = path.join(outputDir(), wallet);
       const result = await runVerify({
         bundlePath,
         publicKeyHex: options.publicKey,
+        rootHex: options.root,
         acceptStub: options.acceptStub,
       });
       if (options.json) {

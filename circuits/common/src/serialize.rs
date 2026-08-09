@@ -52,11 +52,11 @@ pub fn digest_from_bytes(bytes: &[u8; DIGEST_LEN_BYTES]) -> Digest {
     out
 }
 
-/// `0x`-prefixed lowercase hex of a digest. The format published as
-/// `kycHash.hex` and embedded in `manifest.json`.
-pub fn digest_to_hex(d: &Digest) -> String {
+/// `0x`-prefixed lowercase hex of a 32-byte array. Used for `paramsHash`
+/// and other non-digest 32-byte values so the verifier does not need a hex
+/// dependency in its WASM build.
+pub fn bytes32_to_hex(b: &[u8; DIGEST_LEN_BYTES]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let b = digest_to_bytes(d);
     let mut s = String::with_capacity(2 + DIGEST_LEN_BYTES * 2);
     s.push('0');
     s.push('x');
@@ -65,6 +65,12 @@ pub fn digest_to_hex(d: &Digest) -> String {
         s.push(HEX[(byte & 0x0f) as usize] as char);
     }
     s
+}
+
+/// `0x`-prefixed lowercase hex of a digest. The format published as
+/// `kycHash.hex` and embedded in `manifest.json`.
+pub fn digest_to_hex(d: &Digest) -> String {
+    bytes32_to_hex(&digest_to_bytes(d))
 }
 
 #[derive(Debug, PartialEq, Eq)]

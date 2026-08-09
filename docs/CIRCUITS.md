@@ -4,83 +4,137 @@ Each of the four circuits is a self-contained Cargo crate under
 `circuits/`. The Rust API surface is identical across all four
 (`Witness`, `PublicInputs`, `Params`, `commit`, `validate`, `prove`,
 `verify`), which means the prover binary dispatches each leaf without
-knowing the specific circuit — only the circuit ID byte.
+knowing the specific circuit - only the circuit ID byte.
 
-## Phase status disclosure (Phase 2B Step-B, 2026-05-20, Stage 23 complete)
+## Status disclosure (v2.1.0)
 
-**Trusset KYC v2 ships real Winterfell STARK proofs by default.** All
-four circuits are at full in-AIR cryptographic soundness, the workspace
-default features flipped to `prod-proofs-*`, and `manifest.mode` now
-defaults to `"production"`. Counterparty verifiers default to strict
-mode (`accept_stub = false`).
+**Trusset KYC v2.1 ships real Winterfell STARK proofs by default.** The
+workspace default features are `prod-proofs-*` and `manifest.mode`
+defaults to `"production"`. Counterparty verifiers default to strict mode
+(`accept_stub = false`).
 
 | Circuit | AIR state | Predicate state |
 |---|---|---|
-| `tier_threshold` | Real commitment-opening AIR (16-col × 32-row, 2-block Rescue) | **Full in-AIR predicate** (Pattern A walks for `tier ∈ {1,2,3}` and `slack ∈ {0,1,2}`) |
-| `age_threshold` | Real commitment-opening AIR (34-col × 32-row, 2-block Rescue) | **Full in-AIR predicate** (22-bit boolean range decomposition on `slack = age_days − min_age_days`) |
-| `preimage_knowledge` | **Real commitment-opening + 8-bit length-range AIR (28-col × 64-row, 4-block Rescue + 16-col bit decomposition)** (Stage 22, shipped 2026-05-20) | **Full in-AIR predicate** — `value_len_bytes + slack = AIR_MAX_VALUE_BYTES = 128`, enforced by 16-bit boolean decomposition at row 0 |
-| `set_membership` | **Real commitment opening + set_leaf hash + conditional-swap Merkle walk AIR (33-col × 2048-row, 7 Rescue blocks for commit/setleaf + 2 blocks per Merkle level)** (Stage 21, shipped 2026-05-20) | **Full in-AIR predicate** — Merkle walk reaches `set_root` at the depth-dependent boundary row |
+| `tier_threshold` | Real commitment-opening AIR (16-col x 32-row, 2-block Rescue) | **Full in-AIR predicate** (Pattern A walks for `tier in {1,2,3}` and `slack in {0,1,2}`) |
+| `age_threshold` | Real commitment-opening AIR (34-col x 32-row, 2-block Rescue) | **Full in-AIR predicate** (22-bit boolean range decomposition on `slack = age_days - min_age_days`) |
+| `preimage_knowledge` | Real commitment-opening AIR (28-col x 64-row, 4-block Rescue + 16 bit columns) | **Commitment opening only.** The 16-bit length decomposition is present but does not constrain the witness - see the circuit section below |
+| `set_membership` | Real commitment opening + set_leaf hash + conditional-swap Merkle walk with carry binding (33-col x 2048-row) | **Full in-AIR predicate** since circuitsVersion 3 |
 
-**Development path**: `npm start -- --skip-proofs` emits zero-byte
-proof files and `manifest.mode == "stub"`. These bundles verify only
-under `--accept-stub` (verifier development flag). The cryptographic
-chain (signature, merkle root, leaf hash) remains intact in stub mode;
-only the AIR proof bytes are zeroed.
+**Leaf modes.** A leaf is produced in one of two modes, recorded in
+`manifest.leaves[].disclosure`:
 
-**AIR-time negative-witness sweep coverage** confirms the AIRs reject
-spec-violating witnesses (not just `validate()` doing the work): each
-circuit has 4–5 negative tests that bypass `validate()`, call
-`prover::build_proof` directly, then chain `verifier::verify_proof` (the
-prove → verify chain rejects in both debug AND release builds —
-Winterfell's debug-only `debug_assert!` is no longer the sole signal).
+| Mode | Proof file | What is proved |
+|---|---|---|
+| Predicate leaf (`predicate` or `plaintext`) | Real STARK bytes | The circuit's statement below |
+| `commitment_only` | Zero-length sentinel | Nothing in-circuit. The hiding commitment and the leaf hash are computed and enter the Merkle root exactly as for any other leaf |
+
+`commitment_only` exists because `preimage_knowledge` proves nothing a
+counterparty can act on (see below). It removes the proving cost and the
+proof bytes while preserving the binding that actually matters: the value
+is committed, and that commitment is in `kycHash`.
+
+**Development path**: `npm start -- --skip-proofs` emits zero-byte proof
+files for every leaf and `manifest.mode == "stub"`. These verify only
+under `--accept-stub`. A production-mode bundle carrying an empty proof on
+a predicate leaf is rejected outright, so stub and `commitment_only`
+cannot be confused.
 
 ## Cross-circuit invariants
 
 | Invariant | Where enforced |
 |---|---|
-| Witness value is bound to public commitment via `Rescue(bytes_to_field(COMMITMENT_TAG) ‖ Felt(circuit_id) ‖ Felt(witness_felts.len()) ‖ witness_felts ‖ bytes_to_field(nonce))` (v2, felt-level — see `docs/STEP_2B_COMMITMENT_DESIGN.md`) | `circuits/common/src/commitment.rs::compute_commitment` |
+| Witness value is bound to public commitment via `Rescue(bytes_to_field(COMMITMENT_TAG) ‖ Felt(circuit_id) ‖ Felt(witness_felts.len()) ‖ witness_felts ‖ bytes_to_field(nonce))` (v2, felt-level - see `docs/STEP_2B_COMMITMENT_DESIGN.md`) | `circuits/common/src/commitment.rs::compute_commitment` |
 | Per-leaf nonce is HKDF-derived (32 bytes) | `circuits/common/src/seed.rs::derive_leaf_seed` |
 | Witness value is auto-zeroed on drop | `Zeroize` impl on each `Witness` |
 | `params_hash` is SHA-256 over canonical params encoding | each circuit's `Params::hash()` |
 | Cross-language params_hash agreement (TS ↔ Rust) | [`tests/kat/params_hash.json`](../tests/kat/params_hash.json) + `prover/tests/params_hash_kat.rs` + `cli/src/__tests__/paramsHash.test.ts` |
 
-## Circuit 1 — `preimage_knowledge`
+## Circuit 1 - `preimage_knowledge`
 
 **Crate:** [`circuits/preimage_knowledge`](../circuits/preimage_knowledge/src/lib.rs)
 **Circuit ID:** 4
 
-**Statement.** I know `(value, nonce)` such that the v2 commitment opens:
-`Rescue(bytes_to_field(COMMITMENT_TAG) ‖ Felt(4) ‖ Felt(witness_to_felts(value).len()) ‖ witness_to_felts(value) ‖ bytes_to_field(nonce)) == commitment`
-where `witness_to_felts(value) = bytes_to_field(value)`.
+**Statement, formally.** The AIR establishes exactly:
 
-The catch-all leaf type for identity-binding fields where there is no
-meaningful predicate to disclose: `firstName`, `lastName`,
-`documentNumber`. Its ZK value is non-malleability plus the uniform
-"every leaf is a STARK" manifest property.
+> There exist felts `w[0..20]` and `n[0..5]` such that
+> `Rescue(bytes_to_field(COMMITMENT_TAG) ‖ Felt(4) ‖ Felt(20) ‖ w ‖ n) == commitment`,
+> and there exist 16 boolean values `b[0..16]` whose weighted sums satisfy
+> `sum(len_bits) + sum(slack_bits) = 128`.
+
+**What that does and does not establish.** It establishes that the prover
+knows an opening of the public commitment under the correct tag, circuit
+id, and length prefix. It does **not** establish:
+
+- **Canonical encoding.** Nothing binds the absorbed felts to
+  `witness_to_felts(value)`. The `0x01` suffix, the 7-byte chunking, and
+  the zero padding are prover-side conventions with no AIR counterpart.
+  Contrast `set_membership`, which does bind its witness columns.
+- **A length bound.** The 16 bit columns are constant and boolean, and
+  nothing ties them to the witness. `len_bits = 0, slack_bits = 128`
+  satisfies the row-0 constraint for any value whatsoever. The real
+  `len(value) <= max_value_bytes` check lives off-AIR in `validate()`,
+  which is prover-side. The trace builder's own comment concedes it
+  "reads `value.len()` directly - the prover is trusted to use the actual
+  byte length".
+
+**Therefore:** a counterparty learns that the operator knows an opening of
+a commitment the operator itself generated. That is not a claim about the
+subject. The circuit's residual value is non-malleability of the
+commitment within the bundle, which `commitment_only` provides for free.
 
 **Private witness:**
-- `value: Vec<u8>` — variable-length UTF-8 (NFC-normalized upstream)
-- `nonce: [u8; 32]` — HKDF-derived
+- `value: Vec<u8>` - variable-length UTF-8 (NFC-normalized upstream)
+- `nonce: [u8; 32]` - derived from the per-subject key
 
 **Public inputs:** `commitment: Digest`
 
 **Params:**
-- `max_value_bytes: usize` (default 128). Values longer than this are
-  rejected with `ValidateError::ValueTooLong`.
+- `max_value_bytes: usize` (default 128). Enforced by `validate()`, not
+  by the AIR.
 
-**Phase 2B AIR (`--features prod-proofs-preimage`)**:
-1. ✓ Rescue commitment opens correctly over `witness_to_felts(value) ‖ nonce`
-   (shipped Stage 11; 12-col × 64-row trace, 4 Rescue blocks; in-AIR
-   absorption constraints bind each block's rate update to the witness).
-2. ✗ `len(value) ≤ max_value_bytes` range check — still enforced by
-   `validate()` outside the AIR. In-AIR length-range predicate is a
-   Stage 17 design item (needs byte-decomposition of the witness felt
-   carrying the `0x01` suffix; the suffix can land in any of 7 byte
-   positions across up to 3 felts, so the constraint structure is
-   non-trivial — see [STEP_2B_COMMITMENT_DESIGN.md](STEP_2B_COMMITMENT_DESIGN.md)
-   for the design sketch).
+**Recommended use.** `config.example.json` maps `firstName`, `lastName`,
+`documentType`, and `documentNumber` to `commitment_only` rather than to
+this circuit. An operator config that already uses `preimage_knowledge`
+keeps working unchanged; the default was not altered for existing
+deployments.
 
-## Circuit 2 — `tier_threshold`
+## Mode - `commitment_only`
+
+**Statement, formally.** None. No STARK is produced.
+
+The leaf computes the same hiding commitment any other leaf would:
+
+```text
+commitment = Rescue(bytes_to_field(COMMITMENT_TAG) ‖ Felt(4)
+                    ‖ Felt(witness_to_felts(value).len())
+                    ‖ witness_to_felts(value) ‖ bytes_to_field(nonce))
+```
+
+and the same `publicDigest` shape as `preimage_knowledge`
+(`Rescue(PUBLIC_DIGEST_TAG ‖ commitment_be32)`), then the same leaf hash,
+and it takes its place in the Merkle tree indistinguishably from a
+predicate leaf.
+
+**On-disk representation.** `proofs/<leaf>.bin` is present and
+**zero-length**. The file exists so the bundle layout stays uniform for
+every consumer that enumerates `proofPath`; the manifest records
+`disclosure: "commitment_only"`, and the leaf hash binds
+`proofDigest = Rescue(PROOF_DIGEST_TAG ‖ [])`. The verifier accepts an
+empty proof only for this mode or for a `mode: "stub"` bundle, and
+rejects it anywhere else.
+
+The zero-length sentinel was chosen over omitting the file because the
+issuer backend tolerates a leaf whose bytes are absent from a request
+(it falls back to the signed `proofDigest`) but the frontend enumerates
+`*.bin` files when assembling an upload; a present-but-empty file keeps
+both paths working without special cases.
+
+**Manifest circuit identity.** `commitment_only` leaves record
+`circuit: "preimage_knowledge"` and `circuitId: 4`. Consumers that
+validate circuit names against a fixed set - the Trusset issuer backend
+does - would reject an unknown name. The mode is carried by `disclosure`.
+
+## Circuit 2 - `tier_threshold`
 
 **Crate:** [`circuits/tier_threshold`](../circuits/tier_threshold/src/lib.rs)
 **Circuit ID:** 3
@@ -103,14 +157,14 @@ from `config.predicates` entirely.
 - `min_tier: u8`
 
 **Params:**
-- `min_tier: u8` (must equal `PublicInputs::min_tier` — drift is
+- `min_tier: u8` (must equal `PublicInputs::min_tier` - drift is
   rejected by `validate`)
 
 **Phase 2B AIR (`--features prod-proofs-tier`)**:
 1. ✓ Rescue commitment opens correctly (shipped Stage 4; 12-col × 32-row
    trace, 2 Rescue blocks).
 2. ✓ `(tier − 1)(tier − 2)(tier − 3) = 0` enforces `tier ∈ {1,2,3}`
-   (shipped Stage 5 as Pattern A accumulator walk over 3 transitions —
+   (shipped Stage 5 as Pattern A accumulator walk over 3 transitions -
    `acc_tier_next = acc_tier_curr · (tier_col_curr − p_tier_periodic)`
    with `p_tier_periodic = [1, 2, 3, 0, ...]` and boundary `acc_tier[3] = 0`).
 3. ✓ `tier − min_tier = slack` with `slack ∈ {0, 1, 2}` enforces the
@@ -126,7 +180,7 @@ proof for any spec-violating witness (commitment mismatch caught by
 Rescue collision resistance; predicate violation caught by Pattern A
 boundary at row 3).
 
-## Circuit 3 — `age_threshold`
+## Circuit 3 - `age_threshold`
 
 **Crate:** [`circuits/age_threshold`](../circuits/age_threshold/src/lib.rs)
 **Circuit ID:** 1
@@ -140,13 +194,13 @@ Operating on days rather than seconds keeps the range-check cost low
 (~22 bits for plausible date ranges vs. ~37 bits for second precision).
 
 **Private witness:**
-- `dob_days: u64` — days since Unix epoch
+- `dob_days: u64` - days since Unix epoch
 - `nonce: [u8; 32]`
 
 **Public inputs:**
 - `commitment: Digest`
 - `min_age_days: u64`
-- `current_epoch_days: u64` — supplied by the operator at proving time
+- `current_epoch_days: u64` - supplied by the operator at proving time
   per `config.security.epochDaysSource`, recorded in the manifest so
   counterparties can enforce a max staleness window
 
@@ -171,7 +225,7 @@ Operating on days rather than seconds keeps the range-check cost low
 cryptographic soundness. Range bound `MAX_PLAUSIBLE_DAYS = 3,652,500`
 (year 9999) fits comfortably inside the 22-bit window.
 
-## Circuit 4 — `set_membership`
+## Circuit 4 - `set_membership`
 
 **Crate:** [`circuits/set_membership`](../circuits/set_membership/src/lib.rs)
 **Circuit ID:** 2
@@ -188,9 +242,9 @@ the main per-subject leaf tree (`LEAF`, `NODE`) so a set leaf can never
 collide with a subject leaf.
 
 **Private witness:**
-- `value: Vec<u8>` — UTF-8 (NFC-normalized)
+- `value: Vec<u8>` - UTF-8 (NFC-normalized)
 - `nonce: [u8; 32]`
-- `merkle_path: Vec<PathStep>` — sibling digests + side bits, length
+- `merkle_path: Vec<PathStep>` - sibling digests + side bits, length
   `set_depth`
 
 **Public inputs:**
@@ -199,7 +253,7 @@ collide with a subject leaf.
 - `set_depth: u8` ≤ `MAX_SET_DEPTH` (32)
 
 **Params:**
-- `list_id: String` — identifier referencing
+- `list_id: String` - identifier referencing
   `config.lists.<list_id>` in the operator config. Folded into
   `params_hash`.
 
@@ -212,32 +266,65 @@ and SHA-256 of the source. The operator pins
 `config.lists.<id>.sha256` and the prover refuses to start if the
 on-disk file's hash drifts.
 
-**Phase 2B AIR (`--features prod-proofs-set`)**:
-1. ✓ Rescue commitment opens correctly over `(witness_to_felts(value), nonce)`
-   (shipped Stage 13; 12-col × 64-row trace, 3 Rescue blocks).
-2. ✗ `Rescue(SET_LEAF_TAG ‖ value_felts) == leaf` — Stage 16 design,
-   not yet implemented. Will share the same padded witness via cross-phase
-   binding columns; trace extends to rows 45..89.
-3. ✗ Conditional-swap Merkle walk — Stage 16 design, not yet implemented.
-   33-col × 2048-row trace with 4 `current_node_carry` columns that
-   propagate the level-entry node through each level's 30 trace rows
-   (15 rows × 2 Rescue blocks per `hash_two_with_tag` merge). Side-bit
-   ∈ {0,1} per level witnessed in col 24; sibling felts in cols 25..29.
-4. ✗ `set_root` boundary at row `90 + set_depth × 30 − 1` — Stage 16
-   design, not yet implemented.
+**In-AIR statement, formally (circuitsVersion 3).** The AIR establishes:
 
-**Soundness state**: commitment-opening soundness in-AIR; set membership
-predicate still in `validate()`. A malicious prover cannot fabricate a
-proof for an arbitrary commitment, but the Merkle-side check still
-relies on the `validate()` predicate (which is Phase 2B Step-A's
-trust-the-prover-binary assumption). Stage 16 closes this gap fully.
-See [docs/STEP_2B_COMMITMENT_DESIGN.md](STEP_2B_COMMITMENT_DESIGN.md)
-Stage 16 addendum for the full implementation blueprint.
+> There exist `(w, n, side_bits[0..d], siblings[0..d])` such that
+> 1. `Rescue(COMMITMENT_TAG ‖ Felt(2) ‖ Felt(12) ‖ w ‖ n) == commitment`
+>    (rows 0..44),
+> 2. `set_leaf = Rescue(SET_LEAF_TAG ‖ w)` over the **same** `w`, bound
+>    across both phases by the witness columns 12..24 (rows 45..89),
+> 3. starting from `carry[0] = set_leaf`, for each level k the merge
+>    `Rescue(SET_NODE_TAG ‖ a ‖ b)` under the conditional swap on
+>    `side_bits[k]` yields `carry[k+1]`, and
+> 4. `carry[d] == set_root` at row `90 + 30d - 1`.
+
+Step 3's carry chain is what makes this a membership proof. Before
+circuitsVersion 3 the carry and sibling columns were unconstrained
+placeholders, so the walk started from an arbitrary witnessed value
+rather than from the committed value's `set_leaf`. Because the allowlist
+and its whole tree are public, a prover could commit to a **non-member**
+and replay any real member's path: every merge constraint and the
+`set_root` boundary still passed. The circuit proved "some valid path
+exists in this public tree", not "the committed value is in it".
+
+The v3 constraints, in
+[`circuits/set_membership/src/air.rs`](../circuits/set_membership/src/air.rs):
+
+```text
+result[COL_CARRY_START + c] =
+      sel_merge_setup_a * (next[carry + c] - current[4 + c])
+    + sel_level_const   * (next[carry + c] - current[carry + c])
+result[COL_SIBLING_START + c] =
+      sel_level_const   * (next[sib + c]   - current[sib + c])
+result[COL_SIDE_BIT] =
+      sel_merge_setup_a * side * (side - 1)
+    + sel_level_const   * (next[side] - current[side])
+```
+
+At each merge setup the incoming carry must equal the previous row's
+`state[4..8]`, which is the `set_leaf` digest at level 0 and level k-1's
+merged output afterwards. Within a level, side, sibling, and carry are
+constant, so the `setup_a` and `absorb_b` halves consume the same
+witnessed sibling.
+
+`v3_rejects_nonmember_grafted_onto_member_walk_while_v2_accepts` in
+[`circuits/set_membership/src/lib.rs`](../circuits/set_membership/src/lib.rs)
+builds that exact forgery - a non-member commitment spliced onto a real
+member's walk - and asserts the frozen v2 AIR accepts it while v3 rejects
+it. It is both the regression test for the fix and the demonstration that
+the gap was real.
+
+**Verifying older bundles.** Bundles with `manifest.circuitsVersion == 2`
+were proved under the pre-v2.1 constraint set and are verified against the
+frozen copy in
+[`circuits/set_membership/src/air_v2.rs`](../circuits/set_membership/src/air_v2.rs),
+selected automatically by the verifier. Those proofs carry the weaker
+property described above; re-issue the subject under v2.1 to upgrade it.
 
 ## Leaf hash construction (spec §7)
 
-Every leaf — regardless of which circuit produced its proof — is folded
-into a uniform leaf hash:
+Every leaf, regardless of which circuit produced its proof and of
+whether it carries a proof at all, is folded into a uniform leaf hash:
 
 ```
 public_digest = Rescue(PUBLIC_DIGEST_TAG ‖ canonical(public_inputs))
@@ -263,17 +350,42 @@ processing the same subject get the same Merkle tree shape.
 
 ## Merkle root construction (spec §8)
 
-Implementation: [`bundle-format/src/merkle.rs`](../bundle-format/src/merkle.rs).
+Two constructions exist, selected by `manifest.merkleVersion`.
 
-1. Sort the `[Digest; n]` leaves by their big-endian byte representation.
-2. Pair adjacent leaves; within each pair, the smaller hash goes first.
-3. Merge with `Rescue(NODE_TAG ‖ a ‖ b)`.
-4. On odd-length layers, duplicate the last node before pairing.
-5. Repeat until one root remains.
+**Version 2 (absent field means version 1; v2 is the v2.1.0 default):**
 
-This preserves the v1 sorted-leaf Merkle convention: a verifier can
-re-pair without tracking which side was originally left, so per-leaf
-inclusion proofs are just the chain of siblings (no left/right bits).
+```text
+1. Sort the [Digest; n] leaves by their big-endian byte representation.
+2. Pad the sorted layer to next_power_of_two().max(2) with
+   pad = Rescue(MERKLE_PAD_TAG ‖ leaf_count_le8).
+3. Pair adjacent nodes; within a pair the smaller hash goes first;
+   merge with Rescue(NODE_TAG ‖ a ‖ b). No layer is ever odd.
+4. root = Rescue(MERKLE_ROOT_TAG ‖ inner_root ‖ leaf_count_le8 ‖ arity_u8)
+```
+
+**Version 1 (pre-v2.1 bundles, retained for verification):** identical
+through step 3 except that an odd layer duplicates its last node
+(`hash_two(x, x)`) instead of padding, there is no root wrap, and a
+single-leaf tree returns the leaf itself as the root.
+
+The v2 changes exist to remove three structural ambiguities:
+
+| v1 weakness | v2 fix |
+|---|---|
+| A leaf set and the same set plus a duplicate of its largest leaf produce the same root | Power-of-two padding; no node is ever hashed with itself |
+| The root commits to neither leaf count nor arity, so structurally different trees are indistinguishable from the root | Both bound into the root wrap |
+| A one-leaf root is a bare `LEAF_TAG` digest, so a leaf is directly interpretable as a root | The wrap makes leaf and root digests disjoint |
+
+Padding leaves are domain-separated from real leaves, so a padding node
+can never be presented as a member. The sort key is the leaf hash's
+32-byte serialization, not the field name, so the tree is a function of
+the leaf multiset alone; `compute_root` returns `sorted_indices` and the
+prover reorders `manifest.leaves[]` to match.
+
+Coverage in [`bundle-format/src/merkle.rs`](../bundle-format/src/merkle.rs)
+spans 1, 2, 3, 5, 7, 8, and 9 leaves, cross-count distinctness,
+second-preimage resistance, padding-leaf separation, and a test that
+reproduces the v1 duplication collision and asserts v2 does not have it.
 
 ## Determinism boundary
 
@@ -309,7 +421,7 @@ the smoke script ([scripts/ci_smoke.sh](../scripts/ci_smoke.sh))
 includes a build-compat regression check for it.
 
 With `prod-proofs-{tier,age,preimage,set}` enabled per circle, additional
-release-mode tests run: tier 40+5, age 27+5, preimage 32+5, set 37+5 —
+release-mode tests run: tier 40+5, age 27+5, preimage 32+5, set 37+5 -
 all green in both debug AND release builds (Stage 15a's prove+verify
 chain in the test wrapper closes the prior release-only false-positive).
 

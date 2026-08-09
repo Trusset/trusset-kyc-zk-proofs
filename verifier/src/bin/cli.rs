@@ -3,11 +3,17 @@
 //! ```text
 //! trusset-verifier-cli \
 //!   --bundle output/0xAbCd... \
-//!   --public-key <64-hex> \
+//!   [--public-key <64-hex>]  # offline bundles: pin the operator key
+//!   [--root <0x64-hex>]      # on-chain bundles: pin the published root
 //!   [--accept-stub]   # accept manifest.mode == "stub" (development bundles)
 //!   [--strict]        # no-op (strict is the default since Stage 18)
 //!   [--json]          # machine-readable output
 //! ```
+//!
+//! At least one anchor (`--public-key` or `--root`) is required. When the
+//! verifier reads `kycHash` from chain the root already authenticates the
+//! bundle, so no out-of-band key pinning is needed; `--public-key` remains
+//! for offline bundles whose root is not independently known.
 //!
 //! Used by the TypeScript CLI's `npm run verify` command via child_process.
 //!
@@ -19,14 +25,17 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use trusset_verifier::{verify_bundle, VerifyOptions};
+use trusset_verifier::{verify_bundle, VerifyAnchors, VerifyOptions};
 
 const USAGE: &str = "\
-Usage: trusset-verifier-cli --bundle <DIR> --public-key <HEX> [--accept-stub] [--strict] [--json]
+Usage: trusset-verifier-cli --bundle <DIR> (--public-key <HEX> | --root <HEX>) [--accept-stub] [--strict] [--json]
 
 Required:
   --bundle <DIR>           Path to a bundle directory (`output/<wallet>`)
+
+Anchors (at least one required):
   --public-key <HEX>       Operator's 32-byte ed25519 public key, hex
+  --root <HEX>             kycHash read from chain, 0x + 64 hex
 
 Optional:
   --accept-stub            Accept bundles with mode == \"stub\" (development)
@@ -43,7 +52,8 @@ Exit codes:
 
 struct Args {
     bundle: PathBuf,
-    public_key: [u8; 32],
+    public_key: Option<[u8; 32]>,
+    root: Option<String>,
     accept_stub: bool,
     json: bool,
 }
@@ -52,6 +62,7 @@ fn parse_args() -> Result<Args, String> {
     let mut iter = std::env::args().skip(1);
     let mut bundle: Option<PathBuf> = None;
     let mut public_key_hex: Option<String> = None;
+    let mut root_hex: Option<String> = None;
     let mut accept_stub = false;
     let mut json = false;
 
@@ -73,6 +84,12 @@ fn parse_args() -> Result<Args, String> {
                         .ok_or_else(|| "--public-key requires a value".to_string())?,
                 );
             }
+            "--root" => {
+                root_hex = Some(
+                    iter.next()
+                        .ok_or_else(|| "--root requires a value".to_string())?,
+                );
+            }
             "--accept-stub" => accept_stub = true,
             // `--strict` is the post-Stage-18 default; the flag is kept
             // as a no-op so older operator scripts that explicitly pass
@@ -84,14 +101,40 @@ fn parse_args() -> Result<Args, String> {
     }
 
     let bundle = bundle.ok_or_else(|| "--bundle is required".to_string())?;
-    let pk_hex = public_key_hex.ok_or_else(|| "--public-key is required".to_string())?;
-    let pk_bytes = decode_hex32(&pk_hex).map_err(|e| format!("--public-key: {}", e))?;
+    if public_key_hex.is_none() && root_hex.is_none() {
+        return Err(
+            "at least one anchor is required: pass --public-key (offline bundles) or --root (on-chain root)"
+                .to_string(),
+        );
+    }
+    let public_key = match public_key_hex {
+        Some(h) => Some(decode_hex32(&h).map_err(|e| format!("--public-key: {}", e))?),
+        None => None,
+    };
+    let root = match root_hex {
+        Some(h) => Some(normalize_root(&h).map_err(|e| format!("--root: {}", e))?),
+        None => None,
+    };
     Ok(Args {
         bundle,
-        public_key: pk_bytes,
+        public_key,
+        root,
         accept_stub,
         json,
     })
+}
+
+/// Normalize a caller-supplied root to the `0x` + 64 lowercase hex form
+/// the manifest uses.
+fn normalize_root(s: &str) -> Result<String, String> {
+    let stripped = s.trim().trim_start_matches("0x");
+    if stripped.len() != 64 || !stripped.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "root must be 0x + 64 hex chars, got {}",
+            stripped.len()
+        ));
+    }
+    Ok(format!("0x{}", stripped.to_ascii_lowercase()))
 }
 
 fn decode_hex32(s: &str) -> Result<[u8; 32], String> {
@@ -121,7 +164,10 @@ fn main() -> ExitCode {
     };
 
     let opts = VerifyOptions {
-        expected_public_key: args.public_key,
+        anchors: VerifyAnchors {
+            expected_public_key: args.public_key,
+            expected_root: args.root.clone(),
+        },
         accept_stub: args.accept_stub,
     };
 
@@ -146,6 +192,8 @@ fn main() -> ExitCode {
         println!("Wallet:    {}", report.wallet_address);
         println!("kycHash:   {}", report.kyc_hash);
         println!("Leaves:    {}", report.leaf_count);
+        println!("Version:   {}", report.manifest_version);
+        println!("Anchor:    {}", report.anchor);
         println!();
         println!(
             "  layout_ok:               {}",
@@ -161,7 +209,11 @@ fn main() -> ExitCode {
         );
         println!(
             "  signature_valid:         {}",
-            check_mark(report.signature_valid)
+            anchor_mark(args.public_key.is_some(), report.signature_valid)
+        );
+        println!(
+            "  root_anchor_valid:       {}",
+            anchor_mark(args.root.is_some(), report.root_anchor_valid)
         );
         println!(
             "  merkle_root_valid:       {}",
@@ -198,5 +250,15 @@ fn check_mark(ok: bool) -> &'static str {
         "[ok]"
     } else {
         "[FAIL]"
+    }
+}
+
+/// An anchor the caller did not supply is not a failure - it simply does
+/// not apply to this verification.
+fn anchor_mark(supplied: bool, ok: bool) -> &'static str {
+    if !supplied {
+        "[n/a]"
+    } else {
+        check_mark(ok)
     }
 }
