@@ -1,6 +1,6 @@
 <div align="center">
 
-![Batch verification tool](/assets/kyc-hashing-merkle-root-hero1.png)
+![Batch verification tool](/assets/kyc-hashing-merkle-root-hero.png)
 
 # Trusset KYC zk-Proof Tool
 
