@@ -12,6 +12,10 @@
 # enforces — gives a clean signal on what real CI will see when running the
 # DoD test matrix without resetting the cache.
 #
+# v3.0.0: the sweep also runs the three end-to-end matrices, which need the
+# release binaries and jq. They are the only place the operator-facing CLI,
+# the registries, and the archive format are exercised together.
+#
 # Stage 23 (2026-05-20): workspace defaults flipped to `prod-proofs-*`.
 # This script now exercises:
 #   1. Default features (= `prod-proofs-*`) workspace tests (the production
@@ -136,6 +140,28 @@ else
     log "skipping WASM parity (wasm-bindgen not installed or --quick)"
 fi
 
-# ---- 6. Final summary ------------------------------------------------------
+# ---- 6. End-to-end matrices ----------------------------------------------
+#
+# The v2.1 matrix pins the previous bundle shape and must keep passing under
+# v3 tooling; the v3 matrix covers the rotation regression, the temporal
+# semantics, archives, and the unpinned-epoch refusal. Both need jq.
+
+if [ $QUICK -eq 0 ] && command -v jq >/dev/null 2>&1; then
+    log "tests/e2e/canary.sh (determinism)"
+    bash "$REPO_ROOT/tests/e2e/canary.sh"
+    ok "determinism canary green"
+
+    log "tests/e2e/v21_matrix.sh (v2.1 wire compatibility)"
+    bash "$REPO_ROOT/tests/e2e/v21_matrix.sh"
+    ok "v2.1 matrix green"
+
+    log "tests/e2e/v3_matrix.sh (v3 end to end)"
+    bash "$REPO_ROOT/tests/e2e/v3_matrix.sh"
+    ok "v3 matrix green"
+else
+    log "skipping e2e matrices (jq not installed or --quick)"
+fi
+
+# ---- 7. Final summary ------------------------------------------------------
 
 log "ALL SMOKE CHECKS PASSED"

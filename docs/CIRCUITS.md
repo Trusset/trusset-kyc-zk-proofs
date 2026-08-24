@@ -431,3 +431,109 @@ Full feature-permutation sweep:
 bash scripts/ci_smoke.sh           # full back-to-back sweep
 bash scripts/ci_smoke.sh --quick   # default-features only
 ```
+
+## What v3 added, and what it did not
+
+v3 changed **nothing inside any circuit**. The four AIRs, the felt-level
+commitment scheme, the leaf-hash construction for a v2 leaf, the Merkle
+construction, and `CIRCUITS_VERSION` (3) are all exactly as they were at
+v2.1.0. A v2 bundle's leaf hashes, root, and signature are unchanged under v3
+tooling, which is enforced by
+[`bundle-format/tests/v200_backward_compat.rs`](../bundle-format/tests/v200_backward_compat.rs)
+against a real v2.0.0 fixture.
+
+What changed is what each leaf records about the statement it is making.
+
+### The binding digest
+
+A v3 leaf carries a `binding` block — a claim descriptor, a validity interval,
+and for `set_membership` a list-version reference — hashed into
+
+```text
+binding_digest = Rescue(TRUSSET-KYC-V3:LEAF-BIND ‖ canonical_json(binding))
+```
+
+and appended to the leaf-hash preimage:
+
+```text
+leaf_hash = Rescue(
+              LEAF_TAG
+              ‖ len_le(field_name) ‖ field_name_bytes
+              ‖ circuit_id u8
+              ‖ len_le(wallet_bytes) ‖ wallet_bytes
+              ‖ epoch_days_le8
+              ‖ commitment_be32
+              ‖ public_digest_be32
+              ‖ proof_digest_be32
+              [‖ binding_digest_be32]     v3 only
+            )
+```
+
+The digest is appended only when the block is present, so a leaf without one
+hashes over exactly the v2 preimage. Whether a given leaf has one is read from
+the manifest, so there is no ambiguity about which preimage to reconstruct.
+
+Editing a descriptor therefore changes the leaf hash, the Merkle root, and the
+signature. A descriptor that could be swapped freely would be decoration, not
+evidence.
+
+### Claim descriptors
+
+```text
+descriptor.legalBasis     framework, reference, assertion
+descriptor.issuingParty   name, identifierScheme, identifier, jurisdiction
+descriptor.evidenceClass  one of six
+descriptor.evidenceRef    optional operator-side case reference
+```
+
+`evidenceClass` is a labelled taxonomy, not a scale: `SELF_ATTESTED`,
+`DOCUMENTARY`, `THIRD_PARTY_RELIANCE`, `AUTHORITATIVE_SOURCE`,
+`CRYPTOGRAPHIC`, `PHYSICAL_PRESENCE`. Nothing in the codebase compares two of
+them and no predicate accepts an evidence-class threshold — deliberately, so
+it does not become another anonymous integer like `minTier: 2` was.
+
+`issuingParty` defaults to the bundle issuer. A different party is for
+reliance arrangements, where another regulated firm did the verification.
+
+### Validity intervals
+
+```text
+validity.from        first epochDay the claim is asserted for, inclusive
+validity.until       last epochDay, inclusive; absent means open-ended
+validity.basisAsOf   the epochDay the underlying evidence was examined
+```
+
+`basisAsOf` is not `from`. A passport checked in January and used for a March
+issuance has January in `basisAsOf` and March in `from`; the gap is the
+staleness a reviewer wants to see, so it is recorded rather than assumed zero.
+
+None of this is proved in any circuit. A validity interval is a signed
+assertion by the issuer about the window over which it stands behind a claim,
+exactly as `softExpiryDays` always was — the difference is that it is bound
+into the root, it names a real date rather than a day count from an unstated
+origin, and something evaluates it.
+
+### The tier ordering, stated
+
+`tier_threshold` proves `tier ≥ min_tier` by constraining `tier - min_tier`
+to `{0, 1, 2}` inside the AIR, with `NONE = 0` rejected at witness
+construction. The ordering is a property of the circuit, not configurable
+metadata, and v3 does not change it.
+
+The tiers are the MiFID II client-categorisation set, which v3 says out loud
+in the descriptor rather than leaving `minTier: 2` to be guessed at. The
+ordering is sound for the predicate the circuit proves — a sophistication
+floor — with three limits worth stating so a reviewer does not have to derive
+them:
+
+- A per-se professional and one who opted up under Annex II §II.1 are both
+  `2` and carry materially different protections.
+- Elective ECP status is instrument- and service-specific, not a global
+  property of a client.
+- On a protection-owed axis the ordering inverts: `RETAIL` carries the most.
+
+Record the per-se/elective distinction in `descriptor.legalBasis.reference`
+where it matters.
+
+`minTier: RETAIL` asserts nothing: the circuit already refuses to prove
+`NONE`, so it is true of every provable tier.

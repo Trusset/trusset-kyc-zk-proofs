@@ -47,6 +47,10 @@ fn preimage_params_hash(max_value_bytes: usize) -> String {
 
 fn fixture_job(output_root: &str) -> Job {
     Job {
+        epoch_days_source: Some("fixed:20587".to_string()),
+        unpinned_epoch: false,
+        issuer: None,
+        dry_run: false,
         version: "2.1.0".into(),
         deterministic: true,
         epoch_days: 20587,
@@ -65,6 +69,7 @@ fn fixture_job(output_root: &str) -> Job {
                     params_hash: age_params_hash(6570),
                     disclosure: Some(DISCLOSURE_PREDICATE.to_string()),
                     params: Some(serde_json::json!({"minAgeDays": 6570u64})),
+                    ..Default::default()
                 },
                 JobLeaf {
                     field: "firstName".into(),
@@ -74,6 +79,7 @@ fn fixture_job(output_root: &str) -> Job {
                     params_hash: preimage_params_hash(128),
                     disclosure: Some(DISCLOSURE_COMMITMENT_ONLY.to_string()),
                     params: Some(serde_json::json!({"maxValueBytes": 128u64})),
+                    ..Default::default()
                 },
             ],
         }],
@@ -106,6 +112,7 @@ fn key_only(pk: [u8; 32]) -> VerifyOptions {
             expected_root: None,
         },
         accept_stub: false,
+        ..Default::default()
     }
 }
 
@@ -116,6 +123,7 @@ fn root_only(root: &str) -> VerifyOptions {
             expected_root: Some(root.to_string()),
         },
         accept_stub: false,
+        ..Default::default()
     }
 }
 
@@ -177,6 +185,7 @@ fn both_anchors_agree_on_the_same_bundle() {
                 expected_root: Some(root.clone()),
             },
             accept_stub: false,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -196,6 +205,7 @@ fn no_anchor_never_passes() {
         &VerifyOptions {
             anchors: VerifyAnchors::default(),
             accept_stub: false,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -445,6 +455,27 @@ fn unsupported_manifest_version_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let (dir, pk, _root) = build_bundle(&tmp);
 
+    // 3.0.0 became a supported version in v3; 4.0.0 stands in for "a version
+    // this build does not know", which is what the test is actually about.
+    let mut manifest: Manifest =
+        serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
+    manifest.version = "4.0.0".into();
+    rewrite_manifest(&dir, &manifest);
+    resign(&dir, &manifest);
+
+    let report = verify_bundle(&dir, &key_only(pk)).unwrap();
+    assert!(!report.layout_ok);
+    assert!(!report.overall_pass);
+    assert_eq!(report.manifest_version, "4.0.0");
+}
+
+/// A 3.0.0 manifest must be accepted on the verify path, which is the other
+/// half of the version gate above.
+#[test]
+fn v3_manifest_version_is_accepted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (dir, pk, _root) = build_bundle(&tmp);
+
     let mut manifest: Manifest =
         serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
     manifest.version = "3.0.0".into();
@@ -452,7 +483,7 @@ fn unsupported_manifest_version_is_rejected() {
     resign(&dir, &manifest);
 
     let report = verify_bundle(&dir, &key_only(pk)).unwrap();
-    assert!(!report.layout_ok);
-    assert!(!report.overall_pass);
+    assert!(report.layout_ok);
+    assert!(report.overall_pass);
     assert_eq!(report.manifest_version, "3.0.0");
 }

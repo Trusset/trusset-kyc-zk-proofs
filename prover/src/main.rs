@@ -11,10 +11,12 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
+use trusset_bundle_format::manifest::ToolchainBlock;
 use trusset_circuits_common::{conjectured_security_bits, STARK_SECURITY_BITS};
 use trusset_prover::{
     audit::AuditLog,
-    bundle::build_subject_bundle,
+    bundle::{build_subject_bundle_with_toolchain, check_list_commitments, dry_run_subject},
+    dates::epoch_days_to_iso_date,
     errors::{ErrorCode, ProverError, Result},
     io::{Event, EventStream},
     job::{parse_config_hash, Job},
@@ -52,14 +54,6 @@ fn run() -> i32 {
 
     let mut events = EventStream::new(std::io::stdout());
 
-    let (master_key, signing_key) = match load_keys() {
-        Ok(k) => k,
-        Err(e) => {
-            eprintln!("[prover] fatal: {}", e);
-            return 1;
-        }
-    };
-
     let mut stdin = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut stdin) {
         eprintln!("[prover] fatal: stdin: {}", e);
@@ -68,6 +62,50 @@ fn run() -> i32 {
 
     let job = match Job::parse_from_slice(stdin.as_bytes()) {
         Ok(j) => j,
+        Err(e) => {
+            eprintln!("[prover] fatal: {}", e);
+            return 1;
+        }
+    };
+
+    // Refuse an unpinned wall-clock epoch unless the operator asked for one.
+    // A bundle proved against `utc_today` cannot be reproduced after the day
+    // it was made: every per-subject key, nonce, commitment, and leaf hash is
+    // derived from `epoch_days`. That makes the single thing an auditor asks
+    // for — "reproduce this bundle" — impossible, so it is refused rather
+    // than warned about.
+    if let Err(e) = check_epoch_pinning(&job) {
+        eprintln!("[prover] fatal: {}", e);
+        return 1;
+    }
+    if job.unpinned_epoch {
+        eprintln!(
+            "[prover] ############################################################\n\
+             [prover] # DEVELOPMENT MODE: UNPINNED EPOCH                          #\n\
+             [prover] # epochDaysSource is utc_today, resolved to {} ({:>5}).  #\n\
+             [prover] # These bundles CANNOT be reproduced after today and are    #\n\
+             [prover] # marked unpinnedEpoch in the manifest for the rest of      #\n\
+             [prover] # their lives. Do not issue evidence this way.              #\n\
+             [prover] ############################################################",
+            epoch_days_to_iso_date(job.epoch_days),
+            job.epoch_days
+        );
+    }
+
+    // Cross-check every list once, before any subject: a stale registry is a
+    // property of the batch, not of a subject, and reporting it per subject
+    // buries it.
+    if let Err(e) = check_list_commitments(&job) {
+        eprintln!("[prover] fatal: {}", e);
+        return 1;
+    }
+
+    if job.dry_run {
+        return run_dry(&job, &mut events);
+    }
+
+    let (master_key, signing_key) = match load_keys() {
+        Ok(k) => k,
         Err(e) => {
             eprintln!("[prover] fatal: {}", e);
             return 1;
@@ -83,6 +121,7 @@ fn run() -> i32 {
     };
 
     let now_iso = current_iso_timestamp();
+    let toolchain = toolchain_block();
 
     // Open the spec §12.12 audit log under the configured output dir.
     // Soft-fails (writer = None) if the directory can't be created or
@@ -120,13 +159,14 @@ fn run() -> i32 {
             subject_id: &subject.subject_id,
         });
         audit.emit_subject_start(&event_ts, &subject.subject_id);
-        match build_subject_bundle(
+        match build_subject_bundle_with_toolchain(
             &job,
             subject,
             &master_key,
             &signing_key,
             &config_hash,
             &now_iso,
+            toolchain.as_ref(),
         ) {
             Ok(report) => {
                 ok += 1;
@@ -172,6 +212,96 @@ fn run() -> i32 {
         2
     } else {
         1
+    }
+}
+
+/// Refuse to prove against a wall-clock epoch that was not pinned, unless the
+/// operator passed the development flag that the CLI translates into
+/// `unpinned_epoch`.
+fn check_epoch_pinning(job: &Job) -> Result<()> {
+    let Some(source) = job.epoch_days_source.as_deref() else {
+        // A job from pre-v3 tooling says nothing about its epoch source. It is
+        // not this build's place to retroactively refuse those.
+        return Ok(());
+    };
+    if source == "utc_today" && !job.unpinned_epoch {
+        return Err(ProverError::new(
+            ErrorCode::UnpinnedEpoch,
+            format!(
+                "security.epochDaysSource is \"utc_today\", which resolves to whatever day the \
+                 batch happens to run ({}, epoch day {}). Every per-subject key, nonce, \
+                 commitment and leaf hash derives from that number, so a bundle proved this way \
+                 cannot be reproduced tomorrow and cannot satisfy an audit that asks you to. \
+                 Fix: set \"epochDaysSource\": \"fixed:{}\" in config.json to pin today's date as \
+                 the batch as-of date, or \"env:TRUSSET_KYC_EPOCH_DAYS\" to supply it per run. \
+                 To proceed anyway for development only, re-run with --dev-unpinned-epoch.",
+                epoch_days_to_iso_date(job.epoch_days),
+                job.epoch_days,
+                job.epoch_days
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Which binary produced a bundle. Recorded because a v3 bundle must be
+/// verifiable years later, and "some version of the tool" is not enough to
+/// rebuild a verifier that accepts it. The digest is of the running
+/// executable, so it cannot be claimed rather than measured.
+fn toolchain_block() -> Option<ToolchainBlock> {
+    let exe = std::env::current_exe().ok()?;
+    let bytes = std::fs::read(exe).ok()?;
+    Some(ToolchainBlock {
+        prover_version: env!("CARGO_PKG_VERSION").to_string(),
+        prover_sha256: trusset_bundle_format::archive::sha256_hex(&bytes),
+        // Advisory only, and supplied by the build environment. The digest
+        // above is the identifier that cannot be misstated.
+        source_commit: std::env::var("TRUSSET_KYC_SOURCE_COMMIT").ok(),
+    })
+}
+
+/// Dry run: validate every leaf of every subject, report every problem, write
+/// nothing. Needs no key material, so an operator can check a batch before
+/// they have finished setting the tool up.
+fn run_dry(job: &Job, events: &mut EventStream<std::io::Stdout>) -> i32 {
+    let _ = events.emit(&Event::Start {
+        subjects: job.subjects.len(),
+    });
+    let mut total_problems = 0usize;
+    let mut clean = 0usize;
+    for subject in &job.subjects {
+        let problems = dry_run_subject(job, subject);
+        if problems.is_empty() {
+            clean += 1;
+            let _ = events.emit(&Event::SubjectDone {
+                subject_id: &subject.subject_id,
+                bundle_path: "",
+            });
+            continue;
+        }
+        total_problems += problems.len();
+        for p in &problems {
+            let _ = events.emit(&Event::LeafFailed {
+                subject_id: &p.subject_id,
+                field: p.leaf.as_deref().unwrap_or(""),
+                error_code: p.code.as_str(),
+                message: &p.message,
+            });
+        }
+        let _ = events.fail(
+            &subject.subject_id,
+            problems[0].code.clone(),
+            &format!("{} problem(s) on this subject", problems.len()),
+        );
+    }
+    let _ = events.emit(&Event::Done {
+        ok: clean,
+        failed: job.subjects.len() - clean,
+    });
+    if total_problems == 0 {
+        0
+    } else {
+        2
     }
 }
 
@@ -292,21 +422,6 @@ fn current_iso_timestamp() -> String {
     let h = seconds_today / 3600;
     let m = (seconds_today % 3600) / 60;
     let s = seconds_today % 60;
-    let (y, mo, d) = civil_from_days(days);
+    let (y, mo, d) = trusset_prover::dates::civil_from_days(days);
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, m, s)
-}
-
-/// Inverse of `dispatch::days_from_civil` (Howard Hinnant).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
 }

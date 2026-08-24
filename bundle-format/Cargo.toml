@@ -14,6 +14,8 @@ trusset-circuits-common = { path = "../circuits/common" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ed25519-dalek = { version = "2", default-features = false }
+sha2 = "0.10"
+base64ct = { version = "1.6", features = ["alloc"] }
 
 [lints]
 workspace = true

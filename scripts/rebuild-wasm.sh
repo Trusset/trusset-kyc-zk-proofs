@@ -48,7 +48,8 @@ if [ "$FOUND_VERSION" != "$WASM_BINDGEN_VERSION" ]; then
     exit 1
 fi
 
-if ! rustup target list --installed 2>/dev/null | grep -q '^wasm32-unknown-unknown$'; then
+INSTALLED_TARGETS="$(rustup target list --installed 2>/dev/null || true)"
+if ! printf '%s\n' "$INSTALLED_TARGETS" | grep -q '^wasm32-unknown-unknown$'; then
     err "wasm32-unknown-unknown target not installed."
     err "Install: rustup target add wasm32-unknown-unknown"
     exit 1
@@ -102,7 +103,10 @@ grep -oE '^(module\.exports\.|exports\.)[a-zA-Z_0-9]+' "$OUT_DIR/trusset_verifie
 # The issuer backend's check ladder depends on these by name. A rename or
 # a dropped export breaks it at runtime rather than at build time, so fail
 # here instead.
-REQUIRED_EXPORTS="proof_digest_hex public_digest_hex leaf_hash_hex merkle_root_hex merkle_root_hex_v manifest_signing_bytes verify_manifest_signature verify_leaf_stark"
+# v3 adds verify_as_of, binding_digest_hex, and leaf_hash_hex_bound. The
+# pre-v3 exports are unchanged and still required: a backend that has not
+# been updated keeps working against them.
+REQUIRED_EXPORTS="proof_digest_hex public_digest_hex leaf_hash_hex merkle_root_hex merkle_root_hex_v manifest_signing_bytes verify_manifest_signature verify_leaf_stark verify_as_of binding_digest_hex leaf_hash_hex_bound"
 for name in $REQUIRED_EXPORTS; do
     grep -qE "^(module\.exports\.|exports\.)${name}\b" "$OUT_DIR/trusset_verifier.js" \
         || { err "required export missing from the build: ${name}"; exit 1; }

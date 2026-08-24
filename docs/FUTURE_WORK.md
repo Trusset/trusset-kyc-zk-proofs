@@ -1,6 +1,6 @@
 # Future work
 
-Design directions that are deliberately out of scope for v2.1.0, with the
+Design directions that are deliberately out of scope for v3.0.0, with the
 reasoning and the migration cost each would carry. Nothing here is a
 defect; these are the choices a later major version has to make.
 
@@ -52,7 +52,7 @@ enforces a staleness window (`defaultMaxStalenessDays: 400`) because a
 proof issued a year ago still verifies. It also fixes predicate rigidity
 at the root: a counterparty needing "over 21" gets a proof for over 21,
 rather than the operator having to have predicted that threshold at
-issuance. v2.1's multi-instance predicates are a partial answer that
+issuance. Multi-instance predicates are a partial answer that
 still requires predicting the set of thresholds in advance.
 
 **Why not now.** Issuance-time proving is what makes the tool an offline
@@ -74,9 +74,9 @@ than a replacement.
 succinct proof attests to all of them, or aggregate across subjects so a
 batch has a single proof.
 
-**Why it matters here.** Bundle size is 200 KB of proof bytes for 9
-leaves and prove time is 4.8 s per subject, dominated by three
-`set_membership` proofs at 1.35 s each. Aggregation compresses both, and
+**Why it matters here.** Bundle size is 196 KB of proof bytes for 9
+leaves and prove time is 4.2 s per subject, dominated by three
+`set_membership` proofs at roughly 1.2 s each. Aggregation compresses both, and
 it is also the precondition for the single per-subject AIR above becoming
 practical with selective disclosure.
 
@@ -121,6 +121,43 @@ bytes differ between issuances and this linkability goes away.
 
 Closing the gap properly needs blinding in the proving stack, which loops
 back to the stack question above.
+
+## Prebuilt binaries
+
+**What it is.** Publishing signed `trusset-prover`, `trusset-verifier-cli`,
+`trusset-registry`, and `trusset-archive` builds so `npm install` does not
+compile 130 crates on a fresh checkout.
+
+**Why it is attractive.** Cold start drops from minutes to seconds, which is
+most of the distance between "clone" and "first bundle" for an operator who
+does not already have Rust. The binaries are unusually easy to ship: they link
+only `libSystem` and `libiconv` on macOS and would be fully static under musl
+on Linux, so five targets (macOS arm64/x86_64, Linux x86_64/aarch64-musl,
+Windows x86_64) at three binaries each is about 30 MB raw and 10 MB
+compressed.
+
+**Why not now.** It puts a network fetch into the install path of a tool whose
+security model says it makes no outbound calls, and it turns "did you build
+this?" into "do you trust the release channel?". Checking binaries into git
+avoids the fetch but bloats the repository permanently and gives the operator
+no better assurance. Either way the artifacts need signing, checksum pinning,
+and a provenance record, and the decision belongs to whoever runs the release
+process rather than to the code.
+
+**What v3 did instead.** Every bundle records
+`manifest.toolchain.proverSha256`, the digest of the binary that actually ran.
+That is the half of the problem that matters for evidence — tracing a bundle
+to a build — and it is worth having whether or not binaries are ever
+published.
+
+## Per-field evidence dates
+
+`validity.basisAsOf` is per subject: the `evidenceDate` column applies to every
+leaf of a row. In practice a bank often examined a passport in January and
+verified source of wealth in March, and the two claims have different
+staleness. Expressing that needs a per-field evidence date in the input
+schema, which is a wider input format rather than a deeper one, and was left
+out of v3 to keep the CSV shape recognisable.
 
 ## Completing the `tier_threshold` prove-time investigation
 

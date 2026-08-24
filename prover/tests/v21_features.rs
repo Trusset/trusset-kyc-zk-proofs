@@ -73,6 +73,7 @@ fn base_leaves() -> Vec<JobLeaf> {
             params_hash: age_params_hash(6570),
             disclosure: Some(DISCLOSURE_PREDICATE.to_string()),
             params: Some(serde_json::json!({"minAgeDays": 6570u64})),
+            ..Default::default()
         },
         JobLeaf {
             field: "firstName".into(),
@@ -82,6 +83,7 @@ fn base_leaves() -> Vec<JobLeaf> {
             params_hash: preimage_params_hash(128),
             disclosure: Some(DISCLOSURE_COMMITMENT_ONLY.to_string()),
             params: Some(serde_json::json!({"maxValueBytes": 128u64})),
+            ..Default::default()
         },
     ]
 }
@@ -100,6 +102,7 @@ fn job_with_leaves(output_root: &str, leaves: Vec<JobLeaf>, deterministic: bool)
             leaves,
         }],
         list_commitments: BTreeMap::new(),
+        ..Default::default()
     }
 }
 
@@ -250,6 +253,7 @@ fn two_age_thresholds_over_one_field_produce_two_distinct_leaves() {
         params_hash: age_params_hash(7665),
         disclosure: Some(DISCLOSURE_PREDICATE.to_string()),
         params: Some(serde_json::json!({"minAgeDays": 7665u64})),
+        ..Default::default()
     });
     let job = job_with_leaves(tmp.path().to_str().unwrap(), leaves, true);
     let report = build(&job);

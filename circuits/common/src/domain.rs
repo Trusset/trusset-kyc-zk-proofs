@@ -46,6 +46,13 @@ pub const MERKLE_PAD_TAG: [u8; DOMAIN_TAG_BYTES] = pad32("TRUSSET-KYC-V2:MERKLE-
 /// different trees produce distinct roots and keeps a bare leaf digest from
 /// ever being interpretable as a root.
 pub const MERKLE_ROOT_TAG: [u8; DOMAIN_TAG_BYTES] = pad32("TRUSSET-KYC-V2:MERKLE-ROOT");
+/// Tag for the v3 per-leaf binding digest:
+/// `binding = Rescue(LEAF_BIND_TAG ‖ canonical_json(leaf.binding_source))`.
+/// The digest covers the claim descriptor, the validity interval, and the
+/// list-version reference, and is appended to the leaf-hash preimage. A leaf
+/// carrying no binding block hashes exactly as it did under v2, so bundles
+/// issued before v3 keep their leaf hashes, their root, and their signature.
+pub const LEAF_BIND_TAG: [u8; DOMAIN_TAG_BYTES] = pad32("TRUSSET-KYC-V3:LEAF-BIND");
 
 /// Const-context inequality for two 32-byte arrays.
 const fn const_ne(a: &[u8; DOMAIN_TAG_BYTES], b: &[u8; DOMAIN_TAG_BYTES]) -> bool {
@@ -59,7 +66,7 @@ const fn const_ne(a: &[u8; DOMAIN_TAG_BYTES], b: &[u8; DOMAIN_TAG_BYTES]) -> boo
     false
 }
 
-// All C(9,2) = 36 pairs. Adding a new tag requires extending this block.
+// All C(10,2) = 45 pairs. Adding a new tag requires extending this block.
 const_assert!(const_ne(&LEAF_TAG, &NODE_TAG));
 const_assert!(const_ne(&LEAF_TAG, &PUBLIC_DIGEST_TAG));
 const_assert!(const_ne(&LEAF_TAG, &PROOF_DIGEST_TAG));
@@ -96,6 +103,15 @@ const_assert!(const_ne(&SET_NODE_TAG, &MERKLE_ROOT_TAG));
 const_assert!(const_ne(&COMMITMENT_TAG, &MERKLE_PAD_TAG));
 const_assert!(const_ne(&COMMITMENT_TAG, &MERKLE_ROOT_TAG));
 const_assert!(const_ne(&MERKLE_PAD_TAG, &MERKLE_ROOT_TAG));
+const_assert!(const_ne(&LEAF_TAG, &LEAF_BIND_TAG));
+const_assert!(const_ne(&NODE_TAG, &LEAF_BIND_TAG));
+const_assert!(const_ne(&PUBLIC_DIGEST_TAG, &LEAF_BIND_TAG));
+const_assert!(const_ne(&PROOF_DIGEST_TAG, &LEAF_BIND_TAG));
+const_assert!(const_ne(&SET_LEAF_TAG, &LEAF_BIND_TAG));
+const_assert!(const_ne(&SET_NODE_TAG, &LEAF_BIND_TAG));
+const_assert!(const_ne(&COMMITMENT_TAG, &LEAF_BIND_TAG));
+const_assert!(const_ne(&MERKLE_PAD_TAG, &LEAF_BIND_TAG));
+const_assert!(const_ne(&MERKLE_ROOT_TAG, &LEAF_BIND_TAG));
 
 #[cfg(test)]
 mod tests {
@@ -113,6 +129,7 @@ mod tests {
             &COMMITMENT_TAG,
             &MERKLE_PAD_TAG,
             &MERKLE_ROOT_TAG,
+            &LEAF_BIND_TAG,
         ] {
             assert_eq!(tag.len(), 32);
         }
@@ -132,6 +149,7 @@ mod tests {
             ("COMMIT", COMMITMENT_TAG),
             ("MERKLE-PAD", MERKLE_PAD_TAG),
             ("MERKLE-ROOT", MERKLE_ROOT_TAG),
+            ("LEAF-BIND", LEAF_BIND_TAG),
         ];
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
@@ -148,8 +166,9 @@ mod tests {
     fn tags_start_with_versioned_namespace() {
         // Cheap sanity check that the project namespace is intact. If anyone
         // changes the prefix, every shipped proof becomes invalid — the test
-        // forces them to acknowledge it.
-        let prefix = b"TRUSSET-KYC-V2:";
+        // forces them to acknowledge it. Tags introduced in v3 carry the v3
+        // namespace; every v2 tag keeps the v2 namespace so leaf hashes and
+        // roots issued before v3 are unchanged.
         for tag in [
             &LEAF_TAG,
             &NODE_TAG,
@@ -161,7 +180,8 @@ mod tests {
             &MERKLE_PAD_TAG,
             &MERKLE_ROOT_TAG,
         ] {
-            assert!(tag.starts_with(prefix));
+            assert!(tag.starts_with(b"TRUSSET-KYC-V2:"));
         }
+        assert!(LEAF_BIND_TAG.starts_with(b"TRUSSET-KYC-V3:"));
     }
 }

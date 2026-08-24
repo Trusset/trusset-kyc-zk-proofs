@@ -5,6 +5,16 @@ and input/output orchestration. Rust owns all cryptography, proof
 generation, and proof verification. The seam is a JSON-over-stdin/stdout
 protocol between the TS CLI and the `trusset-prover` binary.
 
+v3 adds two Rust binaries and one seam. `trusset-registry` writes the
+append-only registries — list versions, root anchors, revocations — each
+signed with the same key that signs manifests, because a record establishing
+what was true when must not be editable by whoever holds the working
+directory. `trusset-archive` packages bundles together with the registries
+their proofs depend on, so verification years later needs one file rather than
+one file plus the operator's machine. The seam is that a leaf now binds a
+claim descriptor and a validity interval into its hash, which is why changing
+either changes the root.
+
 ## Crate map
 
 ```
@@ -20,22 +30,34 @@ trusset-kyc-hashing/
 ├── bundle-format/            # Manifest schema, leaf/merkle, ed25519 verify
 │                             # WASM-compatible (no std::fs). Consumed by both
 │                             # prover and verifier.
+│   ├── src/claims.rs         # v3 claim descriptors, validity intervals, and
+│   │                         # the binding digest folded into the leaf hash
+│   ├── src/registry.rs       # v3 append-only list registry, root history,
+│   │                         # revocation log, and their resolution logic
+│   └── src/archive.rs        # v3 self-contained archive container
 │
-├── prover/                   # `trusset-prover` binary + library
-│   ├── src/main.rs           # stdin → NDJSON events on stdout; --rekey-subject
+├── prover/                   # `trusset-prover` + `trusset-registry` binaries
+│   ├── src/main.rs           # stdin → NDJSON events on stdout; --rekey-subject;
+│   │                         # dry-run mode; the unpinned-epoch refusal
+│   ├── src/bin/registry.rs   # `trusset-registry`: list-version, anchor, revoke, show
+│   ├── src/registry_io.rs    # Append-only registry read/write, signed on write
+│   ├── src/dates.rs          # epochDays ↔ calendar-date conversions
 │   ├── src/job.rs            # Job spec schema
-│   ├── src/dispatch.rs       # Per-leaf circuit routing + commitment_only mode
+│   ├── src/dispatch.rs       # Per-leaf circuit routing, commitment_only mode,
+│   │                         # binding assembly, and the stub/prove split
 │   ├── src/encrypt.rs        # xsalsa20-poly1305 for secrets.enc (v1 + v2 layouts)
 │   ├── src/entropy.rs        # Guarded OS entropy; refuses under determinism
 │   ├── src/rekey.rs          # Per-subject master-key rotation, no re-proving
 │   ├── src/sign.rs           # ed25519 signing helpers
 │   └── src/bundle.rs         # Atomic per-subject directory writer
 │
-├── verifier/                 # `trusset-verifier-cli` binary + library + WASM cdylib
-│   ├── src/lib.rs            # verify_bundle(path, opts) -> VerifyReport
+├── verifier/                 # `trusset-verifier-cli` + `trusset-archive` + WASM cdylib
+│   ├── src/lib.rs            # verify_bundle(path, opts) -> VerifyReport, with
+│   │                         # the as-of resolution and claim-status evaluation
 │   ├── src/bundle.rs         # Disk loader
 │   ├── src/wasm.rs           # wasm-bindgen entry points (gated by `wasm` feature)
-│   └── src/bin/cli.rs        # CLI wrapper for the TS layer
+│   ├── src/bin/cli.rs        # CLI wrapper; --archive, --as-of-block, --as-of-date
+│   └── src/bin/archive.rs    # `trusset-archive`: build and inspect
 │
 ├── tools/list-commit/        # `trusset-list-commit` binary
 │                             # Builds list_commitments JSON from plain text source
@@ -43,8 +65,15 @@ trusset-kyc-hashing/
 ├── scripts/rebuild-wasm.sh   # Reproducible WASM build for counterparty vendoring
 │
 ├── cli/                      # TypeScript CLI (the operator-facing entry point)
-│   ├── src/index.ts          # Commander wiring
-│   ├── src/config.ts         # v2 config validator with v1 fallbacks
+│   ├── src/index.ts          # Commander wiring: hash, verify, init, show,
+│   │                         # list-version, anchor, revoke, archive, decrypt
+│   ├── src/init.ts           # Guided setup: keys, config, registry, env report
+│   ├── src/keys.ts           # Key generation and ed25519 public-key derivation
+│   ├── src/config.ts         # Config validator; the unpinned-epoch refusal
+│   ├── src/descriptors.ts    # Claim-descriptor and validity resolution
+│   ├── src/registry.ts       # Registry reader and list-version resolution
+│   ├── src/dates.ts          # epochDays ↔ calendar-date, mirroring dates.rs
+│   ├── src/dryRun.ts         # Whole-batch problem collection and reporting
 │   ├── src/recordValidation.ts  # Non-throwing per-record validation
 │   ├── src/jobSpec.ts        # Build prover stdin JSON
 │   ├── src/paramsHash.ts     # TS replica of each circuit's Params::hash
@@ -55,12 +84,18 @@ trusset-kyc-hashing/
 │
 ├── config/                   # Operator configuration
 │   ├── config.example.json
-│   └── list_commitments/     # Pre-committed set-membership lists
+│   ├── list_commitments/     # Plain-text list sources
+│   └── registry/             # v3 append-only registries, each with a .sig
+│       ├── lists/<id>.json   #   every list version ever authoritative
+│       ├── root_history.json #   which root was published at which block
+│       └── revocations.json  #   lapses and voidances
 │
 ├── tests/
 │   ├── e2e/canary.sh         # Determinism canary
 │   ├── e2e/wasm_parity.sh    # Native vs WASM VerifyReport byte-equality
-│   ├── e2e/v21_matrix.sh     # Eight-scenario end-to-end matrix
+│   ├── e2e/v21_matrix.sh     # v2.1 wire compatibility under v3 tooling
+│   ├── e2e/v3_matrix.sh      # v3 end to end: rotation regression, as-of,
+│   │                         # revocation, archive, determinism, epoch refusal
 │   ├── fixtures/             # A real v2.0.0 manifest, for back-compat tests
 │   └── kat/                  # Cross-language Known-Answer Test fixtures
 │

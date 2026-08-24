@@ -59,14 +59,17 @@ test('quarantines a bad wallet but processes the rest of the batch', () => {
   assert.equal(out.failed.length, 1);
   assert.equal(out.failed[0].errorCode, 'E_INPUT');
   assert.equal(out.failed[0].rowNum, 2);
-  assert.match(out.failed[0].message, /invalid wallet address/);
+  assert.match(out.failed[0].message, /not a valid Ethereum address/);
+  assert.equal(out.failed[0].field, 'walletAddress');
+  assert.match(out.failed[0].message, /Fix:/);
 });
 
 test('quarantines missing country', () => {
   const out = validateRecords([record({ country: '' })], baseConfig());
   assert.equal(out.valid.length, 0);
   assert.equal(out.failed.length, 1);
-  assert.match(out.failed[0].message, /missing or invalid country/);
+  assert.match(out.failed[0].message, /shorter than two characters/);
+  assert.equal(out.failed[0].field, 'country');
 });
 
 test('quarantines softExpiry > hardExpiry', () => {
@@ -76,10 +79,10 @@ test('quarantines softExpiry > hardExpiry', () => {
   );
   assert.equal(out.valid.length, 0);
   assert.equal(out.failed.length, 1);
-  assert.match(out.failed[0].message, /softExpiryDays.*cannot exceed/);
+  assert.match(out.failed[0].message, /softExpiryDays \(800\) exceeds hardExpiryDays \(400\)/);
 });
 
-test('multiple failures all collected; valid rows survive', () => {
+test('every failing row is reported, not just the first', () => {
   const records: KycRecord[] = [
     record({ walletAddress: 'bad1' }),
     record(),
@@ -97,10 +100,71 @@ test('multiple failures all collected; valid rows survive', () => {
   );
 });
 
-test('investorType falls back to default when invalid', () => {
+// Through v2.1 an unrecognised investorType was silently replaced by the
+// configured default. A row declaring PROFESSIONAL_INVESTOR was recorded as
+// RETAIL, signed, and committed into kycHash with no warning and no failure
+// row — a bundle asserting a tier the operator never declared, in a context
+// where retail and professional are different regulatory regimes. Producing
+// evidence that contradicts the source record is worse than refusing to
+// produce any.
+test('an unrecognised investorType quarantines the row instead of coercing it', () => {
   const out = validateRecords([record({ investorType: 'BOGUS' })], baseConfig());
+  assert.equal(out.valid.length, 0);
+  assert.equal(out.failed.length, 1);
+  assert.equal(out.failed[0].field, 'investorType');
+  assert.match(out.failed[0].message, /not a recognised investor type/);
+  assert.match(out.failed[0].message, /leave the column blank/);
+});
+
+// A blank column still means "use the configured default": the operator has
+// said what an absent value means, which is different from having said
+// something the tool cannot read.
+test('a blank investorType takes the configured default', () => {
+  for (const blank of ['', null, undefined]) {
+    const out = validateRecords([record({ investorType: blank })], baseConfig());
+    assert.equal(out.valid.length, 1, `blank value ${JSON.stringify(blank)}`);
+    assert.equal(out.valid[0].investorType, 'RETAIL');
+  }
+});
+
+test('an unusable expiry value quarantines the row', () => {
+  const notANumber = validateRecords(
+    [record({ softExpiryDays: 'soon' })],
+    baseConfig(),
+  );
+  assert.equal(notANumber.failed.length, 1);
+  assert.match(notANumber.failed[0].message, /is not a number/);
+
+  const outOfRange = validateRecords(
+    [record({ hardExpiryDays: 99999 })],
+    baseConfig(),
+  );
+  assert.equal(outOfRange.failed.length, 1);
+  assert.match(outOfRange.failed[0].message, /outside 0\.\.36500 days/);
+
+  const blank = validateRecords([record({ softExpiryDays: '' })], baseConfig());
+  assert.equal(blank.valid.length, 1);
+  assert.equal(blank.valid[0].softExpiryDays, 365);
+});
+
+// v3: the per-subject evidence date, which sets `validity.basisAsOf`.
+test('a valid evidenceDate is parsed into epochDays', () => {
+  const out = validateRecords([record({ evidenceDate: '2026-08-01' })], baseConfig());
   assert.equal(out.valid.length, 1);
-  assert.equal(out.valid[0].investorType, 'RETAIL');
+  assert.equal(out.valid[0].evidenceDate, 20666);
+});
+
+test('an impossible evidenceDate quarantines the row', () => {
+  const out = validateRecords([record({ evidenceDate: '2026-13-45' })], baseConfig());
+  assert.equal(out.failed.length, 1);
+  assert.equal(out.failed[0].field, 'evidenceDate');
+  assert.match(out.failed[0].message, /not a real calendar date/);
+});
+
+test('an absent evidenceDate is not an error', () => {
+  const out = validateRecords([record()], baseConfig());
+  assert.equal(out.valid.length, 1);
+  assert.equal(out.valid[0].evidenceDate, undefined);
 });
 
 test('investorType accepts case-insensitive matches', () => {

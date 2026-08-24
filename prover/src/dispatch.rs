@@ -5,14 +5,18 @@
 //! `public` fields and produces a fully-bound `ProvedLeaf` ready for
 //! manifest assembly.
 
+use crate::dates::{days_from_civil, epoch_days_to_iso_date};
 use crate::errors::{ErrorCode, ProverError, Result};
 use crate::job::{JobLeaf, JobSubject, ListCommitment};
-use crate::leaf::{compute_leaf_hash, compute_proof_digest};
+use crate::leaf::compute_proof_digest;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use trusset_bundle_format::claims::{compute_binding_digest, LeafBinding};
+use trusset_bundle_format::leaf::compute_leaf_hash_bound;
 use trusset_bundle_format::manifest::{
     DISCLOSURE_COMMITMENT_ONLY, DISCLOSURE_PLAINTEXT, DISCLOSURE_PREDICATE,
 };
+use trusset_bundle_format::registry::list_content_hash;
 use trusset_circuit_age_threshold as age;
 use trusset_circuit_preimage_knowledge as preimage;
 use trusset_circuit_set_membership as set;
@@ -38,6 +42,10 @@ pub struct ProvedLeaf {
     pub manifest_params: serde_json::Value,
     /// `plaintext` | `predicate` | `commitment_only`.
     pub disclosure: String,
+    /// v3 claim descriptor / validity / list-version block, and its digest.
+    /// `None` for a job that supplied none, which reproduces the v2 leaf hash.
+    pub binding: Option<LeafBinding>,
+    pub binding_digest: Option<Digest>,
     /// Raw witness fields preserved for `secrets.enc` (zeroed on drop).
     pub plaintext_value: Zeroizing<String>,
     pub nonce: Zeroizing<[u8; 32]>,
@@ -52,6 +60,33 @@ pub struct SecretsEntry {
     pub circuit: String,
 }
 
+/// Whether a leaf gets a real STARK or only its predicate checked.
+///
+/// `Stub` still runs the circuit's `validate()`, so an under-age subject fails
+/// in stub mode exactly as it does in production. What it skips is the
+/// proving, which before v3 ran in full and then had its output discarded —
+/// making `--skip-proofs` cost the same as a real run while producing nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeafMode {
+    Prove,
+    Stub,
+}
+
+impl LeafMode {
+    #[must_use]
+    pub fn from_skip_proofs(skip: bool) -> Self {
+        if skip {
+            LeafMode::Stub
+        } else {
+            LeafMode::Prove
+        }
+    }
+
+    fn is_stub(self) -> bool {
+        self == LeafMode::Stub
+    }
+}
+
 pub fn prove_leaf(
     subject_seed: &[u8; 32],
     subject: &JobSubject,
@@ -60,9 +95,43 @@ pub fn prove_leaf(
     list_commitments: &BTreeMap<String, ListCommitment>,
     skip_proofs: bool,
 ) -> Result<ProvedLeaf> {
+    prove_leaf_inner(
+        subject_seed,
+        subject,
+        epoch_days,
+        leaf,
+        list_commitments,
+        skip_proofs,
+    )
+    .map_err(|e| with_leaf_context(leaf, e))
+}
+
+/// Attach the leaf name and circuit to any error raised while handling one
+/// leaf. Without this a batch failure says only which subject failed, which is
+/// useless on a nine-leaf subject with three `set_membership` predicates.
+fn with_leaf_context(leaf: &JobLeaf, e: ProverError) -> ProverError {
+    if e.message.starts_with("leaf \"") {
+        return e;
+    }
+    ProverError::new(
+        e.code,
+        format!("leaf \"{}\" ({}): {}", leaf.field, leaf.circuit, e.message),
+    )
+}
+
+fn prove_leaf_inner(
+    subject_seed: &[u8; 32],
+    subject: &JobSubject,
+    epoch_days: u64,
+    leaf: &JobLeaf,
+    list_commitments: &BTreeMap<String, ListCommitment>,
+    skip_proofs: bool,
+) -> Result<ProvedLeaf> {
+    let mode = LeafMode::from_skip_proofs(skip_proofs);
     let start = std::time::Instant::now();
     let circuit_id = parse_circuit_id(&leaf.circuit)?;
     let params_hash = leaf.params_hash_bytes()?;
+    let binding = build_binding(leaf, list_commitments)?;
 
     let leaf_seed = derive_leaf_seed(
         subject_seed,
@@ -76,29 +145,30 @@ pub fn prove_leaf(
     let wallet_bytes = subject.wallet_bytes()?;
     let commitment_only = leaf.disclosure.as_deref() == Some(DISCLOSURE_COMMITMENT_ONLY);
 
-    let (commitment, public_digest, manifest_public_inputs, mut proof_bytes) = if commitment_only {
+    let (commitment, public_digest, manifest_public_inputs, proof_bytes) = if commitment_only {
         commit_only(&plaintext_value, &nonce)?
     } else {
         match circuit_id {
-            CircuitId::PreimageKnowledge => prove_preimage(leaf, &plaintext_value, &nonce)?,
-            CircuitId::TierThreshold => prove_tier(leaf, &plaintext_value, &nonce)?,
-            CircuitId::AgeThreshold => prove_age(leaf, &plaintext_value, &nonce, epoch_days)?,
+            CircuitId::PreimageKnowledge => prove_preimage(leaf, &plaintext_value, &nonce, mode)?,
+            CircuitId::TierThreshold => prove_tier(leaf, &plaintext_value, &nonce, mode)?,
+            CircuitId::AgeThreshold => prove_age(leaf, &plaintext_value, &nonce, epoch_days, mode)?,
             CircuitId::SetMembership => {
-                prove_set(leaf, &plaintext_value, &nonce, list_commitments)?
+                prove_set(leaf, &plaintext_value, &nonce, list_commitments, mode)?
             }
         }
     };
 
-    // `--skip-proofs` mode: replace the binding placeholder proof with a
-    // zero-byte file. The leaf hash still encodes the (now-empty)
-    // proof_digest, so any tamper attempt that swaps a zero-byte file for
-    // a real proof breaks the manifest signature too.
-    if skip_proofs {
-        proof_bytes.clear();
-    }
-
     let proof_digest = compute_proof_digest(&proof_bytes);
-    let leaf_hash = compute_leaf_hash(
+    let binding_digest = match binding.as_ref() {
+        Some(b) => Some(compute_binding_digest(b).map_err(|e| {
+            ProverError::new(
+                ErrorCode::DescriptorInvalid,
+                format!("claim descriptor could not be canonicalized: {}", e),
+            )
+        })?),
+        None => None,
+    };
+    let leaf_hash = compute_leaf_hash_bound(
         &leaf.field,
         circuit_id,
         &wallet_bytes,
@@ -106,6 +176,7 @@ pub fn prove_leaf(
         &commitment,
         &public_digest,
         &proof_digest,
+        binding_digest.as_ref(),
     );
 
     let disclosure = resolve_disclosure(leaf, circuit_id);
@@ -123,6 +194,8 @@ pub fn prove_leaf(
         params_hash_hex: format!("0x{}", hex::encode(params_hash)),
         manifest_params,
         disclosure,
+        binding,
+        binding_digest,
         plaintext_value: Zeroizing::new(plaintext_value),
         nonce,
         took_ms: start.elapsed().as_millis() as u64,
@@ -173,6 +246,159 @@ fn resolve_manifest_params(
     }
 }
 
+/// Assemble and validate the v3 binding block for a leaf.
+///
+/// A job either supplies both a descriptor and a validity interval or neither.
+/// Supplying one alone is rejected rather than silently half-recorded: a claim
+/// with a legal basis but no window, or a window with no stated basis, is not
+/// evidence anyone can act on.
+fn build_binding(
+    leaf: &JobLeaf,
+    list_commitments: &BTreeMap<String, ListCommitment>,
+) -> Result<Option<LeafBinding>> {
+    match (leaf.descriptor.as_ref(), leaf.validity.as_ref()) {
+        (None, None) => return Ok(None),
+        (None, Some(_)) => {
+            return Err(ProverError::new(
+                ErrorCode::DescriptorMissing,
+                "a validity interval was supplied with no claim descriptor. Add \
+                 `descriptor` (legalBasis, issuingParty, evidenceClass) for this predicate in \
+                 config.json, or remove `validity` to issue a v2-shaped leaf.",
+            ));
+        }
+        (Some(_), None) => {
+            return Err(ProverError::new(
+                ErrorCode::ValidityInvalid,
+                "a claim descriptor was supplied with no validity interval. Add \
+                 `validity` (from, until, basisAsOf) for this predicate in config.json.",
+            ));
+        }
+        (Some(_), Some(_)) => {}
+    }
+
+    let descriptor = leaf.descriptor.clone().expect("checked above");
+    let validity = leaf.validity.clone().expect("checked above");
+
+    for (label, value) in [
+        (
+            "descriptor.legalBasis.framework",
+            &descriptor.legal_basis.framework,
+        ),
+        (
+            "descriptor.legalBasis.reference",
+            &descriptor.legal_basis.reference,
+        ),
+        (
+            "descriptor.legalBasis.assertion",
+            &descriptor.legal_basis.assertion,
+        ),
+        (
+            "descriptor.issuingParty.name",
+            &descriptor.issuing_party.name,
+        ),
+        (
+            "descriptor.issuingParty.identifierScheme",
+            &descriptor.issuing_party.identifier_scheme,
+        ),
+        (
+            "descriptor.issuingParty.identifier",
+            &descriptor.issuing_party.identifier,
+        ),
+        (
+            "descriptor.issuingParty.jurisdiction",
+            &descriptor.issuing_party.jurisdiction,
+        ),
+    ] {
+        if value.trim().is_empty() {
+            return Err(ProverError::new(
+                ErrorCode::DescriptorInvalid,
+                format!(
+                    "{} is empty. Every claim must say what rule it asserts and who warrants it.",
+                    label
+                ),
+            ));
+        }
+    }
+
+    if !validity.is_well_formed() {
+        return Err(ProverError::new(
+            ErrorCode::ValidityInvalid,
+            format!(
+                "validity interval is not well formed: from={} ({}), until={}, basisAsOf={} ({}). \
+                 `until` must not precede `from`, and `basisAsOf` must not follow `from` — \
+                 evidence cannot post-date the window it supports.",
+                validity.from,
+                epoch_days_to_iso_date(validity.from),
+                validity
+                    .until
+                    .map(|u| format!("{} ({})", u, epoch_days_to_iso_date(u)))
+                    .unwrap_or_else(|| "open-ended".to_string()),
+                validity.basis_as_of,
+                epoch_days_to_iso_date(validity.basis_as_of),
+            ),
+        ));
+    }
+
+    let circuit_id = parse_circuit_id(&leaf.circuit)?;
+    if circuit_id == CircuitId::SetMembership {
+        let Some(list_version) = leaf.list_version.as_ref() else {
+            return Err(ProverError::new(
+                ErrorCode::DescriptorMissing,
+                "a set_membership leaf with a claim descriptor must also record which list \
+                 version it was proved against. Build the list registry with \
+                 `npm run list-version` so the CLI can resolve one.",
+            ));
+        };
+        let list = list_commitments.get(&list_version.list_id).ok_or_else(|| {
+            ProverError::new(
+                ErrorCode::ListNotFound,
+                format!(
+                    "declared list version references list '{}', which was not supplied to the \
+                     prover. Check `config.lists` names the same list the descriptor does.",
+                    list_version.list_id
+                ),
+            )
+        })?;
+        let refs: Vec<&[u8]> = list.values.iter().map(|s| s.as_bytes()).collect();
+        let (root, _depth, _) = set::build_set_tree(&refs);
+        let recomputed_root = digest_to_hex(&root);
+        if !list_version.root.eq_ignore_ascii_case(&recomputed_root) {
+            return Err(ProverError::new(
+                ErrorCode::ListVersionMismatch,
+                format!(
+                    "declared list '{}' version {} has root {}, but the values supplied to the \
+                     prover recompute to {}. The registry entry and the list file disagree — \
+                     re-run `npm run list-version` for this list.",
+                    list_version.list_id, list_version.version, list_version.root, recomputed_root
+                ),
+            ));
+        }
+        let recomputed_content = list_content_hash(&list.values);
+        if !list_version
+            .content_hash
+            .eq_ignore_ascii_case(&recomputed_content)
+        {
+            return Err(ProverError::new(
+                ErrorCode::ListVersionMismatch,
+                format!(
+                    "declared list '{}' version {} has contentHash {}, but the values supplied \
+                     recompute to {}.",
+                    list_version.list_id,
+                    list_version.version,
+                    list_version.content_hash,
+                    recomputed_content
+                ),
+            ));
+        }
+    }
+
+    Ok(Some(LeafBinding {
+        descriptor,
+        validity,
+        list_version: leaf.list_version.clone(),
+    }))
+}
+
 /// `commitment_only` leaf mode: produce the hiding Rescue commitment and
 /// the preimage-shaped public digest, with a zero-length sentinel in place
 /// of a STARK. The leaf still participates identically in leaf hashing and
@@ -195,8 +421,16 @@ fn commit_only(
 }
 
 fn parse_circuit_id(name: &str) -> Result<CircuitId> {
-    CircuitId::from_str(name)
-        .ok_or_else(|| ProverError::new(ErrorCode::Config, format!("unknown circuit: {}", name)))
+    CircuitId::from_str(name).ok_or_else(|| {
+        ProverError::new(
+            ErrorCode::Config,
+            format!(
+                "'{}' is not a circuit this build knows. Valid values are age_threshold, \
+                 set_membership, tier_threshold, preimage_knowledge, and commitment_only.",
+                name
+            ),
+        )
+    })
 }
 
 fn leaf_value_as_string(v: &serde_json::Value) -> Result<String> {
@@ -205,8 +439,21 @@ fn leaf_value_as_string(v: &serde_json::Value) -> Result<String> {
         serde_json::Value::Number(n) => Ok(n.to_string()),
         serde_json::Value::Bool(b) => Ok(b.to_string()),
         _ => Err(ProverError::input(
-            "leaf.value must be a string, number, or boolean",
+            "the value for this field is an object, array, or null. Fix: supply a string, \
+             number, or boolean in this subject's input row.",
         )),
+    }
+}
+
+/// Human name for a tier code, used in failure messages so an operator does
+/// not have to look up what `minTier: 2` meant.
+fn tier_name(t: u8) -> &'static str {
+    match t {
+        0 => "NONE",
+        1 => "RETAIL",
+        2 => "PROFESSIONAL",
+        3 => "ELIGIBLE_COUNTERPARTY",
+        _ => "unknown",
     }
 }
 
@@ -216,6 +463,7 @@ fn prove_preimage(
     leaf: &JobLeaf,
     value_str: &str,
     nonce: &[u8; 32],
+    mode: LeafMode,
 ) -> Result<(Digest, Digest, serde_json::Value, Vec<u8>)> {
     let value_bytes = nfc_bytes(value_str);
     let params = preimage::Params::default();
@@ -226,12 +474,22 @@ fn prove_preimage(
     let commitment = preimage::commit(&witness);
     let public = preimage::PublicInputs { commitment };
 
-    let bytes = preimage::prove(&witness, &public, &params).map_err(|e| {
-        ProverError::new(
-            ErrorCode::CircuitInternal,
-            format!("preimage_knowledge prove: {:?}", e),
-        )
-    })?;
+    let bytes = if mode.is_stub() {
+        preimage::validate(&witness, &public, &params).map_err(|e| {
+            ProverError::new(
+                ErrorCode::CircuitInternal,
+                format!("preimage_knowledge validation failed: {:?}", e),
+            )
+        })?;
+        Vec::new()
+    } else {
+        preimage::prove(&witness, &public, &params).map_err(|e| {
+            ProverError::new(
+                ErrorCode::CircuitInternal,
+                format!("preimage_knowledge prove: {:?}", e),
+            )
+        })?
+    };
 
     let manifest_pub = serde_json::json!({
         "commitment": digest_to_hex(&commitment),
@@ -246,12 +504,15 @@ fn prove_tier(
     leaf: &JobLeaf,
     value_str: &str,
     nonce: &[u8; 32],
+    mode: LeafMode,
 ) -> Result<(Digest, Digest, serde_json::Value, Vec<u8>)> {
     let tier_val = parse_tier(value_str)?;
     if tier_val == tier::TIER_NONE {
         return Err(ProverError::new(
             ErrorCode::TierNone,
-            "tier value is NONE — remove the predicate or supply a non-NONE tier",
+            "the subject's investor tier is NONE, which the circuit cannot prove a floor for. \
+             Fix: correct this subject's investorType in the input row, or remove the \
+             tier_threshold predicate for subjects with no tier claim.",
         ));
     }
 
@@ -266,7 +527,9 @@ fn prove_tier(
         .ok_or_else(|| {
             ProverError::new(
                 ErrorCode::Config,
-                "tier_threshold leaf missing public.min_tier",
+                "no `minTier` was supplied for this predicate. Fix: set \
+                 `config.predicates.<field>.params.minTier` to RETAIL, PROFESSIONAL, or \
+                 ELIGIBLE_COUNTERPARTY.",
             )
         })?;
 
@@ -281,14 +544,47 @@ fn prove_tier(
         min_tier,
     };
 
-    let bytes = tier::prove(&witness, &public, &params).map_err(|e| match e {
-        tier::ValidateError::BelowMinimum { .. } => {
-            ProverError::new(ErrorCode::TierBelowMin, format!("{:?}", e))
-        }
-        tier::ValidateError::TierIsNone => {
-            ProverError::new(ErrorCode::TierNone, format!("{:?}", e))
-        }
-        other => ProverError::new(ErrorCode::CircuitInternal, format!("{:?}", other)),
+    let outcome = if mode.is_stub() {
+        tier::validate(&witness, &public, &params).map(|()| Vec::new())
+    } else {
+        tier::prove(&witness, &public, &params)
+    };
+    let bytes = outcome.map_err(|e| match e {
+        // The subject's own tier is deliberately absent from this message.
+        // Failure rows land in output/failures.csv, which travels; the
+        // asserted floor is public (it is in the manifest), the subject's
+        // value is not.
+        tier::ValidateError::BelowMinimum { .. } => ProverError::new(
+            ErrorCode::TierBelowMin,
+            format!(
+                "the subject's investor tier is below the asserted minimum of {} ({}). \
+                 Fix: correct this subject's investorType in the input row, lower `minTier` \
+                 for this predicate in config.json, or exclude the subject from the batch.",
+                min_tier,
+                tier_name(min_tier)
+            ),
+        ),
+        tier::ValidateError::TierIsNone => ProverError::new(
+            ErrorCode::TierNone,
+            "the subject's investor tier is NONE, which the circuit cannot prove a floor for."
+                .to_string(),
+        ),
+        tier::ValidateError::InvalidMinTier(t) => ProverError::new(
+            ErrorCode::Config,
+            format!(
+                "`minTier` is {}, which is not one of RETAIL (1), PROFESSIONAL (2), or \
+                 ELIGIBLE_COUNTERPARTY (3). Fix `config.predicates.investorType.params.minTier`.",
+                t
+            ),
+        ),
+        other => ProverError::new(
+            ErrorCode::CircuitInternal,
+            format!(
+                "tier_threshold proving failed internally ({:?}). This is a bug in the tool, \
+                 not in the input; please report it with the manifest and this message.",
+                other
+            ),
+        ),
     })?;
 
     let manifest_pub = serde_json::json!({
@@ -322,6 +618,7 @@ fn prove_age(
     value_str: &str,
     nonce: &[u8; 32],
     current_epoch_days: u64,
+    mode: LeafMode,
 ) -> Result<(Digest, Digest, serde_json::Value, Vec<u8>)> {
     let dob_days = parse_dob(value_str)?;
     let min_age_days = leaf
@@ -331,7 +628,8 @@ fn prove_age(
         .ok_or_else(|| {
             ProverError::new(
                 ErrorCode::Config,
-                "age_threshold leaf missing public.min_age_days",
+                "no age threshold was supplied for this predicate. Fix: set \
+                 `config.predicates.<field>.params.minAgeYears` (or `minAgeDays`).",
             )
         })?;
 
@@ -347,11 +645,51 @@ fn prove_age(
         current_epoch_days,
     };
 
-    let bytes = age::prove(&witness, &public, &params).map_err(|e| match e {
-        age::ValidateError::BelowMinimum { .. } => {
-            ProverError::new(ErrorCode::AgeBelowMin, format!("{:?}", e))
-        }
-        other => ProverError::new(ErrorCode::CircuitInternal, format!("{:?}", other)),
+    let outcome = if mode.is_stub() {
+        age::validate(&witness, &public, &params).map(|()| Vec::new())
+    } else {
+        age::prove(&witness, &public, &params)
+    };
+    let bytes = outcome.map_err(|e| match e {
+        // The subject's actual age is withheld for the same reason as the
+        // tier value above: the threshold is public, the subject's attribute
+        // is not, and failure rows are written to a file that travels.
+        age::ValidateError::BelowMinimum { .. } => ProverError::new(
+            ErrorCode::AgeBelowMin,
+            format!(
+                "the subject does not meet the asserted age threshold of {} days as of {} \
+                 (epoch day {}). Fix: correct this subject's dateOfBirth in the input row, \
+                 lower `minAgeYears` for this predicate in config.json, or exclude the subject \
+                 from the batch.",
+                min_age_days,
+                epoch_days_to_iso_date(current_epoch_days),
+                current_epoch_days
+            ),
+        ),
+        age::ValidateError::TimeTravel { .. } => ProverError::new(
+            ErrorCode::Input,
+            format!(
+                "the subject's date of birth falls after the batch as-of date {} (epoch day {}). \
+                 Fix: correct the date in this subject's input row, or check that \
+                 `security.epochDaysSource` is not pinned to a date in the past.",
+                epoch_days_to_iso_date(current_epoch_days),
+                current_epoch_days
+            ),
+        ),
+        age::ValidateError::OutOfRange => ProverError::new(
+            ErrorCode::Input,
+            "the date of birth or the as-of date is outside the representable range \
+             (1970-01-01 to roughly year 9999). Fix: correct the value in this subject's \
+             input row.",
+        ),
+        other => ProverError::new(
+            ErrorCode::CircuitInternal,
+            format!(
+                "age_threshold proving failed internally ({:?}). This is a bug in the tool, \
+                 not in the input; please report it with the manifest and this message.",
+                other
+            ),
+        ),
     })?;
 
     let manifest_pub = serde_json::json!({
@@ -369,46 +707,26 @@ fn parse_dob(s: &str) -> Result<u64> {
     }
     let bytes = s.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
-        return Err(ProverError::input(format!(
-            "dateOfBirth must be YYYY-MM-DD or days-since-epoch number: {}",
-            s
-        )));
+        return Err(ProverError::input(
+            "the date value for this field is not in YYYY-MM-DD form (or a days-since-epoch \
+             integer). Fix: correct the value in this subject's input row.",
+        ));
     }
     let y: i64 = s[0..4]
         .parse()
-        .map_err(|_| ProverError::input("dateOfBirth year not numeric"))?;
+        .map_err(|_| ProverError::input("the year part of this date is not numeric."))?;
     let m: u32 = s[5..7]
         .parse()
-        .map_err(|_| ProverError::input("dateOfBirth month not numeric"))?;
+        .map_err(|_| ProverError::input("the month part of this date is not numeric."))?;
     let d: u32 = s[8..10]
         .parse()
-        .map_err(|_| ProverError::input("dateOfBirth day not numeric"))?;
-    days_from_civil(y, m, d)
-        .ok_or_else(|| ProverError::input(format!("dateOfBirth out of range: {}", s)))
-}
-
-/// Howard Hinnant's `days_from_civil`. Returns days since 1970-01-01 for any
-/// proleptic Gregorian date with `m in 1..=12, d in 1..=31`. Returns None if
-/// the day-of-month is invalid for the month or if the year is outside the
-/// representable u64 range.
-fn days_from_civil(y: i64, m: u32, d: u32) -> Option<u64> {
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
-        return None;
-    }
-    let y = y - if m <= 2 { 1 } else { 0 };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as u64;
-    let m = m as u64;
-    let d = d as u64;
-    let m_adj = if m > 2 { m as i64 - 3 } else { m as i64 + 9 };
-    let doy = ((153 * m_adj as u64 + 2) / 5) + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days_since_y0 = (era * 146097) + doe as i64 - 719468;
-    if days_since_y0 < 0 {
-        None
-    } else {
-        Some(days_since_y0 as u64)
-    }
+        .map_err(|_| ProverError::input("the day part of this date is not numeric."))?;
+    days_from_civil(y, m, d).ok_or_else(|| {
+        ProverError::input(
+            "this date is not a real calendar date, or falls before 1970-01-01. Fix: correct \
+             the value in this subject's input row.",
+        )
+    })
 }
 
 // ============================== set_membership ==============================
@@ -418,6 +736,7 @@ fn prove_set(
     value_str: &str,
     nonce: &[u8; 32],
     list_commitments: &BTreeMap<String, ListCommitment>,
+    mode: LeafMode,
 ) -> Result<(Digest, Digest, serde_json::Value, Vec<u8>)> {
     let list_id = leaf
         .public
@@ -426,13 +745,20 @@ fn prove_set(
         .ok_or_else(|| {
             ProverError::new(
                 ErrorCode::Config,
-                "set_membership leaf missing public.list_id",
+                "no list was supplied for this predicate. Fix: set \
+                 `config.predicates.<field>.params.list` to a list id declared under \
+                 `config.lists`.",
             )
         })?;
     let list = list_commitments.get(list_id).ok_or_else(|| {
         ProverError::new(
             ErrorCode::ListNotFound,
-            format!("list '{}' not provided in job.list_commitments", list_id),
+            format!(
+                "list '{}' is referenced by this predicate but was not supplied to the prover. \
+                 Fix: declare it under `config.lists.{}` with a path to its registry, and run \
+                 `npm run list-version -- --list-id {}` if no registry exists yet.",
+                list_id, list_id, list_id
+            ),
         )
     })?;
 
@@ -440,6 +766,10 @@ fn prove_set(
     let raw_refs: Vec<&[u8]> = list.values.iter().map(|s| s.as_bytes()).collect();
     let (root, depth, leaves) = set::build_set_tree(&raw_refs);
 
+    // The failing value is deliberately not echoed: this message reaches
+    // output/failures.csv, and for `nationality` or `documentIssuingCountry`
+    // the value is exactly what the predicate exists to keep private. The
+    // wallet and the leaf name locate the input row without disclosing it.
     let index = list
         .values
         .iter()
@@ -447,7 +777,15 @@ fn prove_set(
         .ok_or_else(|| {
             ProverError::new(
                 ErrorCode::ListMemberMissing,
-                format!("value '{}' not in list '{}'", value_str, list_id),
+                format!(
+                    "this subject's value is not a member of list '{}' ({} entries, root {}). \
+                     Fix: add the value to the list source and run `npm run list-version -- \
+                     --list-id {}` to record a new version, or exclude the subject from the batch.",
+                    list_id,
+                    list.values.len(),
+                    &digest_to_hex(&root)[..12],
+                    list_id
+                ),
             )
         })?;
     let path = set::inclusion_path(&leaves, index);
@@ -468,15 +806,33 @@ fn prove_set(
         set_depth: depth,
     };
 
-    let bytes = set::prove(&witness, &public, &params).map_err(|e| match e {
+    let outcome = if mode.is_stub() {
+        set::validate(&witness, &public, &params).map(|()| Vec::new())
+    } else {
+        set::prove(&witness, &public, &params)
+    };
+    let bytes = outcome.map_err(|e| match e {
         set::ValidateError::NotInSet => ProverError::new(
             ErrorCode::ListMemberMissing,
-            format!("set_membership: {:?}", e),
+            format!(
+                "this subject's value is not a member of list '{}'. Fix: add it to the list \
+                 source and run `npm run list-version -- --list-id {}`, or exclude the subject.",
+                list_id, list_id
+            ),
         ),
-        set::ValidateError::EmptyValue => {
-            ProverError::new(ErrorCode::EmptyValue, "set_membership value is empty")
-        }
-        other => ProverError::new(ErrorCode::CircuitInternal, format!("{:?}", other)),
+        set::ValidateError::EmptyValue => ProverError::new(
+            ErrorCode::EmptyValue,
+            "the value for this field is empty. Fix: supply a value in the input row, or \
+             remove the predicate for this field in config.json.",
+        ),
+        other => ProverError::new(
+            ErrorCode::CircuitInternal,
+            format!(
+                "set_membership proving failed internally ({:?}). This is a bug in the tool, \
+                 not in the input; please report it with the manifest and this message.",
+                other
+            ),
+        ),
     })?;
 
     let manifest_pub = serde_json::json!({

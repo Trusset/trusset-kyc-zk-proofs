@@ -38,12 +38,24 @@ export interface SetMembershipParams {
   list: string;
 }
 
-export type PredicateSpec =
-  | { circuit: 'preimage_knowledge'; params?: PreimageParams }
-  | { circuit: 'tier_threshold'; params: TierParams }
-  | { circuit: 'age_threshold'; params: AgeParams }
-  | { circuit: 'set_membership'; params: SetMembershipParams }
-  | { circuit: 'commitment_only'; params?: PreimageParams };
+/**
+ * v3 additions carried on every predicate: what legal test it stands for and
+ * how long it is asserted. Both are required for manifest version 3.0.0 and
+ * both bind into the leaf hash.
+ */
+export interface PredicateClaimFields {
+  descriptor?: DescriptorConfig;
+  validity?: ValidityConfig;
+}
+
+export type PredicateSpec = PredicateClaimFields &
+  (
+    | { circuit: 'preimage_knowledge'; params?: PreimageParams }
+    | { circuit: 'tier_threshold'; params: TierParams }
+    | { circuit: 'age_threshold'; params: AgeParams }
+    | { circuit: 'set_membership'; params: SetMembershipParams }
+    | { circuit: 'commitment_only'; params?: PreimageParams }
+  );
 
 /**
  * A field maps to either one predicate or several instances of one over
@@ -73,6 +85,13 @@ export interface MappingConfig {
   investorTypeField?: string;
   softExpiryDaysField?: string;
   hardExpiryDaysField?: string;
+  /**
+   * v3: optional input column holding the date the subject's evidence was
+   * examined, `YYYY-MM-DD`. When present it sets `validity.basisAsOf` for that
+   * subject's leaves; otherwise the per-predicate offset applies. Defaults to
+   * `evidenceDate`.
+   */
+  evidenceDateField?: string;
 }
 
 export interface OutputDefaults {
@@ -98,15 +117,32 @@ export interface SecurityConfig {
   masterKeyEnv?: string;
   epochDaysSource?: EpochDaysSource;
   deterministic?: boolean;
+  /** v3: root of the append-only registries. Default `config/registry`. */
+  registryDir?: string;
 }
 
 export interface ManifestConfig {
   signingKeyEnv?: string;
+  /**
+   * v3: the party legally responsible for every assertion in the bundle.
+   * Required to issue a version 3.0.0 manifest.
+   */
+  issuer?: IssuerConfig;
+  /**
+   * Wire version to emit. Defaults to 3.0.0. Set to 2.1.0 to keep producing
+   * the previous bundle shape while migrating.
+   */
+  version?: string;
 }
 
 export interface ListsEntry {
-  /** Relative path to the list-commitments JSON produced by `trusset-list-commit`. */
-  path: string;
+  /**
+   * Relative path to a list-commitments JSON. Optional in v3: when omitted,
+   * the list resolves from the signed registry under
+   * `security.registryDir`, which is the only source that also retains
+   * superseded versions.
+   */
+  path?: string;
   /** Optional pinned SHA-256 — the prover refuses to start if the file's hash drifts. */
   sha256?: string;
 }
@@ -127,6 +163,8 @@ export interface Config {
   output: OutputConfig;
   security: SecurityConfig;
   manifest?: ManifestConfig;
+  /** v3: defaults applied to every predicate's claim descriptor. */
+  claims?: ClaimsConfig;
 }
 
 // =================== KYC record ===================
@@ -144,4 +182,110 @@ export interface IndexRow {
   softExpiryDays: number;
   hardExpiryDays: number;
   kycHash: string;
+}
+
+// =================== v3: claim descriptors ===================
+
+/**
+ * How the underlying value was verified. A labelled taxonomy, not a scale:
+ * nothing compares two evidence classes, and no predicate takes an
+ * evidence-class threshold. `THIRD_PARTY_RELIANCE` in particular carries
+ * whatever assurance the relied-upon firm applied, which this tool cannot
+ * observe.
+ */
+export type EvidenceClass =
+  | 'SELF_ATTESTED'
+  | 'DOCUMENTARY'
+  | 'THIRD_PARTY_RELIANCE'
+  | 'AUTHORITATIVE_SOURCE'
+  | 'CRYPTOGRAPHIC'
+  | 'PHYSICAL_PRESENCE';
+
+export const EVIDENCE_CLASSES: EvidenceClass[] = [
+  'SELF_ATTESTED',
+  'DOCUMENTARY',
+  'THIRD_PARTY_RELIANCE',
+  'AUTHORITATIVE_SOURCE',
+  'CRYPTOGRAPHIC',
+  'PHYSICAL_PRESENCE',
+];
+
+export const IDENTIFIER_SCHEMES = ['LEI', 'BIC', 'FCA_FRN', 'BAFIN_ID', 'CRD_ID', 'INTERNAL'] as const;
+export type IdentifierScheme = (typeof IDENTIFIER_SCHEMES)[number];
+
+/** A named legal person, identified under a public scheme where one exists. */
+export interface PartyRef {
+  name: string;
+  identifierScheme: IdentifierScheme | string;
+  identifier: string;
+  /** ISO 3166-1 alpha-2 of the supervising jurisdiction. */
+  jurisdiction: string;
+}
+
+/** The legal test a predicate stands for. */
+export interface LegalBasis {
+  framework: string;
+  reference: string;
+  assertion: string;
+}
+
+/**
+ * Per-predicate descriptor as written in config.json. `issuingParty` may be
+ * the literal `"self"`, meaning the bundle issuer warrants the claim itself;
+ * a named party is for reliance arrangements where another regulated firm did
+ * the verification.
+ */
+export interface DescriptorConfig {
+  legalBasis: LegalBasis;
+  evidenceClass: EvidenceClass;
+  issuingParty?: PartyRef | 'self';
+  evidenceRef?: string;
+}
+
+/** Fully resolved descriptor as it goes into the job spec and the leaf hash. */
+export interface ResolvedDescriptor {
+  legalBasis: LegalBasis;
+  issuingParty: PartyRef;
+  evidenceClass: EvidenceClass;
+  evidenceRef?: string;
+}
+
+/**
+ * How long a predicate's assertion holds, as written in config.json. Exactly
+ * one of `days`, `until`, or `openEnded` must be given.
+ */
+export interface ValidityConfig {
+  /** Window length in days, inclusive of the first day. */
+  days?: number;
+  /** Fixed last day, `YYYY-MM-DD`. */
+  until?: string;
+  /** No self-imposed end; only a revocation record can end the claim. */
+  openEnded?: boolean;
+  /**
+   * Days before the batch date on which the evidence was examined. Overridden
+   * per subject by `mapping.evidenceDateField` when that column is present.
+   */
+  basisAsOfOffsetDays?: number;
+}
+
+export interface ResolvedValidity {
+  from: number;
+  until?: number;
+  basisAsOf: number;
+}
+
+/** The party legally responsible for every assertion in a bundle. */
+export interface IssuerConfig extends PartyRef {
+  /** Stable label for the signing key, so rotation does not change identity. */
+  keyId: string;
+}
+
+export interface ClaimDefaults {
+  issuingParty?: PartyRef | 'self';
+  evidenceClass?: EvidenceClass;
+  validity?: ValidityConfig;
+}
+
+export interface ClaimsConfig {
+  defaults?: ClaimDefaults;
 }

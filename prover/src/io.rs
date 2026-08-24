@@ -27,6 +27,15 @@ pub enum Event<'a> {
         subject_id: &'a str,
         bundle_path: &'a str,
     },
+    /// One leaf-level problem found during a dry run. Unlike
+    /// `SubjectFailed`, several of these are emitted per subject: a dry run
+    /// exists to report every problem in a batch at once.
+    LeafFailed {
+        subject_id: &'a str,
+        field: &'a str,
+        error_code: &'a str,
+        message: &'a str,
+    },
     SubjectFailed {
         subject_id: &'a str,
         error_code: &'a str,

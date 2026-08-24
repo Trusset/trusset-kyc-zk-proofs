@@ -26,7 +26,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use trusset_bundle_format::manifest::{
-    canonical_disk_bytes, canonical_signing_bytes, Manifest, CREATED_AT_SENTINEL,
+    canonical_disk_bytes, canonical_signing_bytes, Manifest, ToolchainBlock, CREATED_AT_SENTINEL,
 };
 use trusset_circuit_set_membership as set;
 use trusset_circuits_common::{
@@ -54,6 +54,10 @@ pub struct LeafTiming {
 }
 
 /// Build one subject's bundle and write it to disk atomically.
+///
+/// Records no toolchain block. The binary that runs a real batch identifies
+/// itself via [`build_subject_bundle_with_toolchain`]; this shorter form
+/// exists for callers driving the library directly.
 pub fn build_subject_bundle(
     job: &Job,
     subject: &JobSubject,
@@ -61,6 +65,28 @@ pub fn build_subject_bundle(
     signing_key: &SigningSecret,
     config_hash: &[u8; 32],
     now_iso: &str,
+) -> Result<BundleReport> {
+    build_subject_bundle_with_toolchain(
+        job,
+        subject,
+        master_key,
+        signing_key,
+        config_hash,
+        now_iso,
+        None,
+    )
+}
+
+/// Build one subject's bundle, recording which build produced it.
+#[allow(clippy::too_many_arguments)]
+pub fn build_subject_bundle_with_toolchain(
+    job: &Job,
+    subject: &JobSubject,
+    master_key: &[u8; 32],
+    signing_key: &SigningSecret,
+    config_hash: &[u8; 32],
+    now_iso: &str,
+    toolchain: Option<&ToolchainBlock>,
 ) -> Result<BundleReport> {
     // 0. Per-subject key (secretsKdfVersion 2). Deterministic runs derive
     // it from the master key so re-runs stay byte-identical; otherwise it
@@ -109,42 +135,13 @@ pub fn build_subject_bundle(
     let kyc_hash_hex = digest_to_hex(&root);
 
     // 3. List roots needed by the manifest. A list-commitment file that
-    // declares a root is cross-checked against the recomputation here, so
-    // a stale committed file fails the run instead of being ignored.
-    let mut list_roots: BTreeMap<String, String> = BTreeMap::new();
-    for (id, lc) in job.list_commitments.iter() {
-        let refs: Vec<&[u8]> = lc.values.iter().map(|s| s.as_bytes()).collect();
-        if refs.is_empty() {
-            continue;
-        }
-        let (r, depth, _) = set::build_set_tree(&refs);
-        let root_hex = digest_to_hex(&r);
-        if let Some(declared) = lc.declared_root.as_deref() {
-            if !declared.eq_ignore_ascii_case(&root_hex) {
-                return Err(ProverError::new(
-                    ErrorCode::Config,
-                    format!(
-                        "list '{}' declares root {} but its values recompute to {} — regenerate the file with trusset-list-commit",
-                        id, declared, root_hex
-                    ),
-                ));
-            }
-        }
-        if let Some(declared_depth) = lc.declared_depth {
-            if declared_depth != depth {
-                return Err(ProverError::new(
-                    ErrorCode::Config,
-                    format!(
-                        "list '{}' declares depth {} but its values recompute to depth {}",
-                        id, declared_depth, depth
-                    ),
-                ));
-            }
-        }
-        list_roots.insert(id.clone(), root_hex);
-    }
+    // declares a root, a depth, or a content hash is cross-checked against
+    // the recomputation here, so a stale committed file fails the run
+    // instead of being ignored.
+    let list_roots = check_list_commitments(job)?;
 
     let manifest = build_manifest(
+        job,
         subject,
         job.epoch_days,
         job.deterministic,
@@ -155,6 +152,7 @@ pub fn build_subject_bundle(
         &list_roots,
         job.skip_proofs,
         &job.config_hash,
+        toolchain.cloned(),
     );
 
     // 4. Sign the canonical signing view (sentinel timestamp).
@@ -201,6 +199,108 @@ pub fn build_subject_bundle(
         total_proof_bytes: proved.iter().map(|p| p.proof_bytes.len()).sum(),
         leaf_timings,
     })
+}
+
+/// One problem found while validating a subject without writing anything.
+#[derive(Debug, Clone)]
+pub struct SubjectProblem {
+    pub subject_id: String,
+    pub leaf: Option<String>,
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+/// Validate every leaf of one subject and return **all** the problems, not
+/// just the first.
+///
+/// The proving path stops at the first bad leaf, which is right when the
+/// output is a bundle: there is nothing to write once one leaf fails. It is
+/// wrong when the operator is asking "what is wrong with my batch", because it
+/// turns one review pass into as many passes as there are broken rows. This
+/// runs the same witness construction, predicate validation, descriptor and
+/// list-version checks, and collects every failure.
+pub fn dry_run_subject(job: &Job, subject: &JobSubject) -> Vec<SubjectProblem> {
+    let mut problems = Vec::new();
+
+    // A zero seed is sufficient: nothing here depends on the nonce being
+    // secret, and a dry run must not require key material.
+    let seed = [0u8; 32];
+    for leaf in &subject.leaves {
+        if let Err(e) = prove_leaf(
+            &seed,
+            subject,
+            job.epoch_days,
+            leaf,
+            &job.list_commitments,
+            // Skip the STARK: a dry run answers "would this batch prove",
+            // which is decided by witness and predicate validation, and
+            // proving every leaf would make the check as slow as the run it
+            // is meant to precede.
+            true,
+        ) {
+            problems.push(SubjectProblem {
+                subject_id: subject.subject_id.clone(),
+                leaf: Some(leaf.field.clone()),
+                code: e.code,
+                message: e.message,
+            });
+        }
+    }
+    problems
+}
+
+/// Cross-check every list the job supplied before any subject is processed, so
+/// a stale registry is one batch-level failure rather than one failure per
+/// subject.
+pub fn check_list_commitments(job: &Job) -> Result<BTreeMap<String, String>> {
+    let mut list_roots: BTreeMap<String, String> = BTreeMap::new();
+    for (id, lc) in job.list_commitments.iter() {
+        let refs: Vec<&[u8]> = lc.values.iter().map(|s| s.as_bytes()).collect();
+        if refs.is_empty() {
+            continue;
+        }
+        let (r, depth, _) = set::build_set_tree(&refs);
+        let root_hex = digest_to_hex(&r);
+        if let Some(declared) = lc.declared_root.as_deref() {
+            if !declared.eq_ignore_ascii_case(&root_hex) {
+                return Err(ProverError::new(
+                    ErrorCode::Config,
+                    format!(
+                        "list '{}' declares root {} but its values recompute to {}. Fix: \
+                         regenerate it with `npm run list-version -- --list-id {}`.",
+                        id, declared, root_hex, id
+                    ),
+                ));
+            }
+        }
+        if let Some(declared_depth) = lc.declared_depth {
+            if declared_depth != depth {
+                return Err(ProverError::new(
+                    ErrorCode::Config,
+                    format!(
+                        "list '{}' declares depth {} but its values recompute to depth {}. Fix: \
+                         regenerate it with `npm run list-version -- --list-id {}`.",
+                        id, declared_depth, depth, id
+                    ),
+                ));
+            }
+        }
+        if let Some(declared_content) = lc.content_hash.as_deref() {
+            let recomputed = trusset_bundle_format::registry::list_content_hash(&lc.values);
+            if !declared_content.eq_ignore_ascii_case(&recomputed) {
+                return Err(ProverError::new(
+                    ErrorCode::ListVersionMismatch,
+                    format!(
+                        "list '{}' declares contentHash {} but its values recompute to {}. The \
+                         registry entry and the values disagree.",
+                        id, declared_content, recomputed
+                    ),
+                ));
+            }
+        }
+        list_roots.insert(id.clone(), root_hex);
+    }
+    Ok(list_roots)
 }
 
 fn build_secrets_blob(proved: &[ProvedLeaf]) -> Result<Vec<u8>> {

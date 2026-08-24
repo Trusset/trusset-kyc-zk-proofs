@@ -19,11 +19,15 @@
 //! `scripts/rebuild-wasm.sh` for the re-vendoring procedure.
 
 use crate::bundle::loaded_from_parts;
-use crate::{verify_loaded, VerifyAnchors, VerifyOptions};
+use crate::{verify_loaded, AsOf, TemporalContext, VerifyAnchors, VerifyOptions};
 use std::collections::BTreeMap;
-use trusset_bundle_format::leaf::{compute_leaf_hash, compute_proof_digest};
+use trusset_bundle_format::claims::{compute_binding_digest, LeafBinding};
+use trusset_bundle_format::leaf::{
+    compute_leaf_hash, compute_leaf_hash_bound, compute_proof_digest,
+};
 use trusset_bundle_format::manifest::{canonical_signing_bytes, Manifest};
 use trusset_bundle_format::merkle::{compute_root_versioned, MERKLE_VERSION_V1};
+use trusset_bundle_format::registry::{ListRegistry, RevocationLog, RootHistory};
 use trusset_bundle_format::sign;
 use trusset_circuits_common::{digest_to_hex, hex_to_digest, CircuitId, Digest};
 use wasm_bindgen::prelude::*;
@@ -150,13 +154,177 @@ fn do_verify(
     )
     .map_err(|e| JsError::new(&format!("load: {}", e)))?;
 
+    // The pre-v3 exports have no clock and no registries, so they evaluate at
+    // the bundle's own as-of date. That reproduces their v2 semantics exactly:
+    // a verification with no temporal question asked, where every leaf's
+    // validity window necessarily covers the date the bundle was issued.
+    // Stating it as an explicit `Date` rather than letting `Now` fall back to
+    // a sentinel keeps the report honest about which instant was evaluated.
     let opts = VerifyOptions {
         anchors,
         accept_stub,
+        as_of: AsOf::Date {
+            epoch_days: loaded.manifest.epoch_days,
+        },
+        context: TemporalContext::default(),
+        now_epoch_days: loaded.manifest.epoch_days,
     };
 
     let report = verify_loaded(&loaded, &opts);
     serde_json::to_string(&report).map_err(|e| JsError::new(&format!("report serialize: {}", e)))
+}
+
+// =====================================================================
+// v3 temporal verification
+// =====================================================================
+
+/// Registries a caller passes alongside a bundle so an as-of question can be
+/// answered. All three are optional; the report names what was missing rather
+/// than assuming absence means "nothing to report".
+#[derive(serde::Deserialize, Default)]
+struct WasmContext {
+    #[serde(default)]
+    root_history: Option<RootHistory>,
+    #[serde(default)]
+    revocations: Option<RevocationLog>,
+    #[serde(default)]
+    list_registries: BTreeMap<String, ListRegistry>,
+}
+
+/// Verify with an explicit instant and the registries needed to resolve it.
+///
+/// `as_of_kind` is `"now"`, `"date"`, or `"block"`. For `"date"`,
+/// `as_of_value` is an `epochDays` count; for `"block"` it is a block height
+/// and `chain_id` selects the chain. `now_epoch_days` is the caller's current
+/// date, supplied rather than read from a clock so the WASM and native paths
+/// agree.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn verify_as_of(
+    manifest_bytes: &[u8],
+    kyc_hash_text: &str,
+    signature_bytes: &[u8],
+    proofs_json: &str,
+    expected_public_key: &[u8],
+    expected_root: &str,
+    accept_stub: bool,
+    as_of_kind: &str,
+    as_of_value: u64,
+    chain_id: u64,
+    now_epoch_days: u64,
+    context_json: &str,
+) -> Result<String, JsError> {
+    let raw: BTreeMap<String, Vec<u8>> = serde_json::from_str(proofs_json)
+        .map_err(|e| JsError::new(&format!("proofs_json parse: {}", e)))?;
+    let loaded = loaded_from_parts(
+        manifest_bytes,
+        kyc_hash_text,
+        Some(signature_bytes.to_vec()),
+        raw,
+    )
+    .map_err(|e| JsError::new(&format!("load: {}", e)))?;
+
+    let anchors = VerifyAnchors {
+        expected_public_key: if expected_public_key.is_empty() {
+            None
+        } else {
+            Some(parse_public_key(expected_public_key)?)
+        },
+        expected_root: if expected_root.is_empty() {
+            None
+        } else {
+            Some(expected_root.to_string())
+        },
+    };
+
+    let as_of = match as_of_kind {
+        "now" => AsOf::Now,
+        "date" => AsOf::Date {
+            epoch_days: as_of_value,
+        },
+        "block" => AsOf::Block {
+            chain_id,
+            height: as_of_value,
+        },
+        other => {
+            return Err(JsError::new(&format!(
+                "as_of_kind must be now, date, or block; got {}",
+                other
+            )))
+        }
+    };
+
+    let ctx: WasmContext = if context_json.trim().is_empty() {
+        WasmContext::default()
+    } else {
+        serde_json::from_str(context_json)
+            .map_err(|e| JsError::new(&format!("context parse: {}", e)))?
+    };
+
+    let opts = VerifyOptions {
+        anchors,
+        accept_stub,
+        as_of,
+        context: TemporalContext {
+            root_history: ctx.root_history,
+            revocations: ctx.revocations,
+            list_registries: ctx.list_registries,
+        },
+        now_epoch_days,
+    };
+
+    let report = verify_loaded(&loaded, &opts);
+    serde_json::to_string(&report).map_err(|e| JsError::new(&format!("report serialize: {}", e)))
+}
+
+/// `bindingDigest = Rescue(LEAF-BIND ‖ canonical_json(binding))`, so a
+/// backend running its own check ladder can recompute it rather than trusting
+/// the value the manifest carries.
+#[wasm_bindgen]
+pub fn binding_digest_hex(binding_json: &str) -> Result<String, JsError> {
+    let binding: LeafBinding = serde_json::from_str(binding_json)
+        .map_err(|e| JsError::new(&format!("binding parse: {}", e)))?;
+    let digest = compute_binding_digest(&binding)
+        .map_err(|e| JsError::new(&format!("binding canonicalize: {}", e)))?;
+    Ok(digest_to_hex(&digest))
+}
+
+/// `leaf_hash` including a v3 binding digest. Pass an empty `binding_hex` to
+/// reproduce the v2 preimage, which is what a pre-v3 leaf hashes over.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn leaf_hash_hex_bound(
+    field_name: &str,
+    circuit_id: u8,
+    wallet_address: &str,
+    epoch_days: u64,
+    commitment_hex: &str,
+    public_digest_hex_in: &str,
+    proof_digest_hex_in: &str,
+    binding_hex: &str,
+) -> Result<String, JsError> {
+    let circuit = CircuitId::try_from(circuit_id)
+        .map_err(|b| JsError::new(&format!("unknown circuitId {}", b)))?;
+    let wallet = decode_wallet(wallet_address)
+        .ok_or_else(|| JsError::new("walletAddress must be 0x + 40 hex"))?;
+    let commitment = parse_digest(commitment_hex, "commitment")?;
+    let public_digest = parse_digest(public_digest_hex_in, "publicDigest")?;
+    let proof_digest = parse_digest(proof_digest_hex_in, "proofDigest")?;
+    let binding = if binding_hex.trim().is_empty() {
+        None
+    } else {
+        Some(parse_digest(binding_hex, "bindingDigest")?)
+    };
+    Ok(digest_to_hex(&compute_leaf_hash_bound(
+        field_name,
+        circuit,
+        &wallet,
+        epoch_days,
+        &commitment,
+        &public_digest,
+        &proof_digest,
+        binding.as_ref(),
+    )))
 }
 
 // =====================================================================
