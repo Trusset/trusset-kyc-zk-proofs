@@ -37,6 +37,7 @@ below describe those additions and the v2 gaps that motivated them.
 | A claim that stopped being true, or was never true | Separate signed revocation records distinguish `lapsed` from `void_ab_initio`. Neither edits the bundle, both are surfaced by the verifier |
 | Silent substitution of a compliance-relevant input | An `investorType` or expiry value that is present but unrecognised quarantines the row instead of taking the configured default. Through v2.1 a mistyped tier was silently recorded as the default and signed |
 | A witness value leaking through a failure report | Prover failure messages name the leaf and the asserted threshold, never the subject's value. `output/failures.csv` travels; through v2.1 it recorded lines like `value 'BRA' not in list` |
+| A manifest whose `proofPath` escapes the bundle directory | `proofPath` is the only manifest field that reaches the filesystem, and a manifest is untrusted input. Every read path — the verifier's loader, the archive builder, and the archive's own structure check — requires a plain `proofs/<name>` entry with no separators, parent references, or leading dot, so a hand-written manifest cannot make a verifier read outside the bundle |
 | Proof parameters silently weakened below the advertised level | `conjectured_security_bits()` is asserted against `STARK_SECURITY_BITS` at compile time and again at prover startup (`E_WEAK_PROOF_OPTIONS`) |
 
 ### Out of scope
@@ -100,6 +101,28 @@ manifest signature.
 | Secrets encryption | XSalsa20-Poly1305 (libsodium secretbox) | [`xsalsa20poly1305` 0.9](https://crates.io/crates/xsalsa20poly1305) | Bit-compatible with libsodium; auditors can decrypt with either toolchain |
 | Key derivation | HKDF-SHA256 | [`hkdf` 0.12](https://crates.io/crates/hkdf) + [`sha2` 0.10](https://crates.io/crates/sha2) | RFC 5869 |
 | Canonical UTF-8 | Unicode NFC | [`unicode-normalization` 0.1](https://crates.io/crates/unicode-normalization) | Prevents `"café"` composed vs decomposed producing different proofs |
+| Address checksums (TS) | keccak-256 | [`@noble/hashes` 1.x](https://www.npmjs.com/package/@noble/hashes) | Audited, zero-dependency. EIP-55 itself is fifteen lines in `cli/src/address.ts`, pinned against the vectors published in the EIP |
+
+### Dependency surface
+
+The CLI has three runtime dependencies: `@noble/hashes`, `commander`, and the
+two `csv-*` parsers. `npm audit` reports zero advisories.
+
+Through v3.0.0-rc this list also carried `ethers`, used for exactly two
+functions — `isAddress` and `getAddress`. It brought roughly twenty transitive
+packages including a WebSocket client and an ENS normalizer, and produced
+fifteen advisories, one of them high severity (`ws`, uninitialized memory
+disclosure). None was reachable — the tool opens no sockets — but a tool whose
+security model is "no outbound network calls, ever" has no business shipping a
+WebSocket library, and every downstream security review would have had to
+reason about it.
+
+The replacement was differential-tested against `ethers` over 20,012 inputs
+(random addresses in lowercase, uppercase, checksummed, and single-case-flipped
+forms, plus malformed input and the EIP-55 vectors) with zero divergence, and
+bundle output was confirmed byte-identical before and after the swap. That
+check matters because the 20-byte address is hashed into every leaf: a
+divergence would have changed every root the tool has ever produced.
 
 All nine 32-byte domain tags are pairwise distinct at compile time via
 `static_assertions::const_assert!`:

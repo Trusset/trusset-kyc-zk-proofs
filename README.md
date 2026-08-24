@@ -4,7 +4,7 @@
 
 # Trusset KYC zk-Proof Tool
 
-**Generate per-leaf zk-STARK KYC proofs for on-chain identity attestation.**
+**Turn a batch of KYC records into per-subject zk-STARK proofs you can publish on chain — and still explain to a regulator five years later.**
 
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![Rust](https://img.shields.io/badge/Rust-1.82%2B-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
@@ -12,218 +12,189 @@
 [![zk-STARK](https://img.shields.io/badge/zk--STARK-Winterfell-7E57C2)](https://github.com/facebook/winterfell)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-[Quick Start](#quick-start) · [Usage](#usage) · [Configuration](#configuration) · [Security](#security)
+[Quick start](#quick-start) · [Commands](#commands) · [Configuration](#configuration) · [How it works](#how-it-works) · [Security](#security) · [Docs](#documentation)
 
 </div>
 
 ---
 
-## How it works
+## What this is
 
-Each KYC field is bound to a per-leaf zk-STARK that proves a predicate or knowledge claim about its private value. Leaves are committed via a hiding Rescue-Prime commitment with a fresh per-leaf nonce, then sorted lexicographically and merged pairwise into a Rescue-Prime Merkle root. That root is the `kycHash` published to the Trusset network.
+You give it KYC records. It gives you, per subject:
 
-Banks can selectively disclose predicates ("over 18", "country in allowlist", "investor tier at least Professional") without revealing the underlying values, and low-entropy fields like `dateOfBirth` are not rainbow-table vulnerable to anyone holding a Merkle inclusion proof.
+- a **`kycHash`** — one 32-byte Merkle root to publish on chain,
+- a **bundle** of zk-STARK proofs backing that root, one per field,
+- a **signed manifest** saying who asserted what, under which rule, on what evidence, and for how long.
 
-Every leaf also records what it is asserting: the legal basis, the party that warrants it, the class of evidence the value was checked against, and the window over which the claim holds. That block is hashed into the leaf, so it cannot be edited without invalidating the root — a threshold with no stated meaning is not evidence anyone can act on years later.
+A counterparty can then check "is this person over 18 / in an approved
+jurisdiction / a professional client" without ever seeing their date of birth,
+nationality, or documents.
 
-The tool runs entirely on the operator's machine: all proving is local, the master key never leaves the host, and `secrets.enc` is the only place plaintext-equivalent witness material lives on disk. There is no network access at any point, including for verification.
+Everything runs on your machine. No network calls, no service to operate, no
+key ever leaves the host.
 
-**What v3 exists for.** The tool proved what is true now and had no reliable way to prove what was true then. Every entitlement question in securities is a question about a past block. v3 pins the batch date so a bundle can be reproduced, keeps every superseded allowlist version so an old proof still means something, records who is responsible for each assertion, distinguishes a claim that lapsed from one that was never valid, and answers "was this subject entitled at block N" from the operator's own signed records rather than from a chain lookup nobody can make years later. See [docs/MIGRATION_V2_TO_V3.md](docs/MIGRATION_V2_TO_V3.md).
+**Two questions it answers, kept apart on purpose:**
 
-## Quick Start
+| Question | Answer |
+|---|---|
+| Does this bundle hold together, and did you sign it? | `Verifies: PASS/FAIL` — pure cryptography |
+| Could this subject rely on it *at block N*, two years ago? | `Entitled: YES/NO` — adds the root live then, each claim's validity window, and any revocation since |
 
-Requirements: Node.js 18+ and Rust 1.82+. `rust-toolchain.toml` pins 1.91 and
-declares the `wasm32-unknown-unknown` target, so rustup installs both on the
-first `cargo` invocation.
+That second one is what v3 is for. Entitlement questions in securities are
+always about a past moment, and a proof that only tells you about today is not
+much use in a dispute. See [what changed in v3](#what-changed-in-v3).
+
+---
+
+## Quick start
+
+**You need:** Node.js 18+ and Rust 1.82+. That's it — `rust-toolchain.toml`
+pins the exact toolchain and target, so rustup fetches what it needs on the
+first build.
 
 ```bash
 git clone https://github.com/Trusset/trusset-kyc-zk-proofs
 cd trusset-kyc-zk-proofs
-npm install                              # builds the Rust workspace, the WASM verifier, and the TS CLI
+npm install
+```
+
+First build compiles ~130 Rust crates and takes a few minutes. After that it's
+incremental.
+
+```bash
+npm run init
+```
+
+Asks four questions about your institution, then does the rest: generates both
+keys, writes a working `config.json`, records version 1 of your allowlists,
+checks your environment, and prints your public key. Add `--non-interactive`
+with the flags below to script it:
+
+```bash
 npm run init -- --issuer-name "Example Bank AG" --issuer-scheme LEI \
-                --issuer-identifier 529900T8BM49AURSDO55 --issuer-jurisdiction DE
-set -a && . ./.trusset/keys.env && set +a
+                --issuer-identifier 529900T8BM49AURSDO55 \
+                --issuer-jurisdiction DE --non-interactive
 ```
 
-`init` generates both keys, writes a `config.json` with the batch date pinned
-and starting claim descriptors filled in, records version 1 of every allowlist
-it finds, checks the environment, and prints your operator public key. Run it
-with no flags for an interactive prompt. It reports exactly what is missing and
-what to run; nothing it finds already is overwritten without `--force`.
-
-The first install compiles ~130 Rust crates and takes a few minutes; subsequent
-builds are incremental. There are no prebuilt binaries — everything is built
-from source, and each bundle records the SHA-256 of the prover that produced it.
-
-## Usage
-
-**Check a batch before proving anything:**
+Load your keys, drop records in `input/`, and go:
 
 ```bash
-npm start -- --dry-run          # Validate every row and report every problem at once; writes nothing
+set -a && . ./.trusset/keys.env && set +a   # do this in every new shell
+
+cp your-records.json input/
+npm start -- --dry-run                      # check everything first, writes nothing
+npm start                                   # prove for real
 ```
 
-**Hash KYC data:**
+Verify what you just made:
 
 ```bash
-npm start                       # Read /input, prove every subject, write bundles + index CSV
-npm start -- --raw              # Omit the index column from the batched CSV
-npm start -- --skip-proofs      # Skip proving; predicates are still enforced (CI smoke mode)
-npm start -- --no-deterministic # Draw per-subject keys from OS entropy
+npm run show                                # prints your operator public key
+npm run verify -- 0xYourSubject --public-key <that key>
 ```
 
-**Verify a bundle as a counterparty:**
+**That's the whole loop.** Everything below is reference.
+
+> **One thing worth knowing up front:** `init` pins the batch date into
+> `config.json` as `epochDaysSource: "fixed:<today>"`. Leave it pinned. Every
+> per-subject key and commitment derives from that number, so a bundle proved
+> against a moving clock can't be reproduced tomorrow — which is exactly what
+> an auditor will ask you to do. The tool refuses to run unpinned unless you
+> pass `--dev-unpinned-epoch`.
+
+---
+
+## Commands
+
+Every command takes `--json` for machine-readable output. Every failure names
+the field, the subject, and the fix.
+
+### Daily use
 
 ```bash
-npm run verify -- 0xAbCdEf... --root 0x<64-hex-kycHash-read-from-chain>
+npm start -- --dry-run     # validate the whole batch, report every problem at once
+npm start                  # prove /input, write bundles + index CSV to /output
+npm run verify -- <wallet> --public-key <hex>
+npm run show               # resolved config, descriptors, list versions, your public key
 ```
+
+| Flag on `npm start` | What it does |
+|---|---|
+| `--dry-run` | Validates everything, writes nothing, needs no keys. ~0.1 s per subject |
+| `--raw` | Omit the index column from the batched CSV |
+| `--skip-proofs` | Skip STARK generation; predicates are still enforced. For CI |
+| `--no-deterministic` | Draw per-subject keys from OS entropy instead of the master key |
+| `--dev-unpinned-epoch` | Allow a wall-clock batch date. Development only — bundles are permanently marked unreproducible |
+
+### Verifying
 
 ```bash
-npm run verify -- 0xAbCdEf... --public-key <64-hex-of-operator-ed25519-pubkey>
+# Anyone who can read kycHash from chain — the root authenticates the bundle
+npm run verify -- <wallet> --root 0x<64-hex>
+
+# Offline bundles — pin the operator key instead
+npm run verify -- <wallet> --public-key <64-hex>
+
+# What was true at a past block, or on a past day
+npm run verify -- <wallet> --public-key <hex> --as-of-block 8000100 --chain-id 1
+npm run verify -- <wallet> --public-key <hex> --as-of-date 2026-09-15
+
+# Straight from an archive, on a machine that has nothing else
+npm run verify -- <wallet> --public-key <hex> --archive batch.tka
 ```
 
-The first form is for anyone who can read `kycHash` from chain: the published
-root already authenticates the bundle, so no key needs pinning. The second is
-for offline bundles whose root is not independently known. `npm run show`
-prints your public key. Pass both to check both. Passing neither is a usage
-error, not a silent pass.
+Passing neither anchor is a usage error, not a silent pass. Pass both to check
+both.
 
-**Ask what was true then, not what is true now:**
+| Exit code | Meaning |
+|---|---|
+| `0` | Verifies, and entitled at the instant asked about |
+| `2` | Verification failed — cryptographic mismatch or policy rejection |
+| `3` | Verifies, but not entitled then (lapsed, void, outside its window, or a different root at that block) |
+| `64` | Usage error |
+| `66` | Bundle or archive unreadable |
+
+### Keeping the record straight
+
+These three write to append-only, signed registries under `config/registry/`.
+Nothing there is ever edited or removed — that's the point.
 
 ```bash
-npm run verify -- 0xAbCdEf... --public-key <hex> --as-of-block 8000100 --chain-id 1
-npm run verify -- 0xAbCdEf... --public-key <hex> --as-of-date 2026-09-15
+# An allowlist changed. The old version keeps its values forever.
+npm run list-version -- --list-id country_allowlist \
+    --source config/list_commitments/country_allowlist.source.txt \
+    --effective-date 2026-09-01 --note "Sanctions review 2026-Q3"
+
+# You published a root. Record where, so as-of checks work without a chain lookup.
+npm run anchor -- --bundle output/0xAbCd... \
+    --chain-id 1 --block 8000100 --block-time 1787529600
+
+# A claim stopped being true...
+npm run revoke -- --bundle output/0xAbCd... --leaf investorType \
+    --effect lapsed --effective-date 2026-10-01 --reason PERIODIC_REVIEW_OVERDUE
+
+# ...or was never true. Not the same thing, and the tool won't let you conflate them.
+npm run revoke -- --bundle output/0xAbCd... \
+    --effect void_ab_initio --reason FRAUDULENT_ONBOARDING
 ```
 
-Verification answers two separate questions. `Verifies` is cryptography: does
-this bundle hold together and was it signed by that key. `Entitled` adds the
-root that was on chain at the instant you asked about, each leaf's validity
-window, and any revocation the operator has since signed. A bundle whose claims
-were later declared void still verifies — the proof is a true record of what
-was asserted — and reports `Entitled: NO`.
-
-**Record what the tool cannot see:**
+### Archiving
 
 ```bash
-npm run list-version -- --list-id country_allowlist --source <file>   # rotate an allowlist
-npm run anchor -- --bundle output/0xAbCd... --chain-id 1 --block N --block-time T
-npm run revoke -- --bundle output/0xAbCd... --effect lapsed --effective-date 2026-10-01 --reason DOC_EXPIRED
-npm run archive -- --output batch.tka --all output                   # one self-contained file
+npm run archive -- --output 2026Q3.tka --all output    # build
+npm run archive -- --inspect 2026Q3.tka                # read one back
 ```
 
-**Inspect resolved configuration:**
+One file containing the bundles, every list version their proofs used, the
+root history, the revocations, and your issuer identity. It verifies on a bare
+machine with no config, no registry, and no network. Store it wherever you
+keep things you might have to produce in five years.
 
-```bash
-npm run show
-```
+---
 
-Every command supports `--json` for machine-readable output.
+## Input format
 
-## Input / Output
-
-| Direction | Details |
-|-----------|---------|
-| **Input** | Place `.json` or `.csv` files in `/input` |
-| **Output (per subject)** | `/output/<wallet>/{manifest.json, manifest.sig, kycHash.hex, proofs/<field>.bin, secrets.enc}` |
-| **Registries** | `config/registry/{lists/<id>.json, root_history.json, revocations.json}` plus a detached `.sig` for each - append-only, never rewritten |
-| **Archive** | `<name>.tka` - one self-contained file that verifies without this machine |
-| **Output (batch index)** | `/output/kyc_hashes_<timestamp>.csv` - v1-compatible row-per-subject summary for legacy uploaders |
-| **Output (failures)** | `/output/failures.csv` - only created when at least one subject failed |
-| **Cleanup** | `/input` cleared after processing (configurable) |
-
-Two failure stages are recorded: rows that fail TS-side validation (bad wallet, missing country) are quarantined before the prover spawns; rows that fail in the prover (under-age, country not in allowlist, tier=NONE) are isolated per-subject and the rest of the batch continues.
-
-## Configuration
-
-`npm run init` writes a complete `config.json`; the shipped
-`config.example.json` is the same shape. The parts worth understanding:
-
-```json
-{
-  "predicates": {
-    "investorType": {
-      "circuit": "tier_threshold",
-      "params": { "minTier": "PROFESSIONAL" },
-      "descriptor": {
-        "legalBasis": {
-          "framework": "MiFID_II",
-          "reference": "Annex II Section I - professional clients",
-          "assertion": "Subject is categorised at or above professional client"
-        },
-        "evidenceClass": "DOCUMENTARY"
-      },
-      "validity": { "days": 730 }
-    }
-  },
-  "claims": {
-    "defaults": {
-      "issuingParty": "self",
-      "evidenceClass": "DOCUMENTARY",
-      "validity": { "days": 365, "basisAsOfOffsetDays": 0 }
-    }
-  },
-  "security": {
-    "epochDaysSource": "fixed:20689",
-    "registryDir": "config/registry",
-    "deterministic": true
-  },
-  "manifest": {
-    "version": "3.0.0",
-    "signingKeyEnv": "TRUSSET_KYC_SIGNING_KEY",
-    "issuer": {
-      "name": "Example Bank AG",
-      "identifierScheme": "LEI",
-      "identifier": "529900T8BM49AURSDO55",
-      "jurisdiction": "DE",
-      "keyId": "issuing-2026-08"
-    }
-  }
-}
-```
-
-**`descriptor`** says what a threshold stands for. Without it, `minTier: 2` is
-an anonymous integer that no reader can act on years later. `legalBasis` names
-the rule, `evidenceClass` says how the value was verified, and `issuingParty`
-(default `"self"`) names who warrants the claim — a different party when
-another regulated firm verified it under a reliance arrangement. Evidence
-classes: `SELF_ATTESTED`, `DOCUMENTARY`, `THIRD_PARTY_RELIANCE`,
-`AUTHORITATIVE_SOURCE`, `CRYPTOGRAPHIC`, `PHYSICAL_PRESENCE`.
-
-**`validity`** says how long the claim is asserted for: `{"days": N}`,
-`{"until": "YYYY-MM-DD"}`, or `{"openEnded": true}`. `basisAsOfOffsetDays`
-records when the evidence was examined, which is not when the claim starts; an
-`evidenceDate` column in the input overrides it per subject.
-
-**`epochDaysSource`** is the batch as-of date, and it must be pinned:
-`fixed:<n>` or `env:<VAR>`. `utc_today` is refused outside
-`--dev-unpinned-epoch`, because every per-subject key and every commitment
-derives from that number and a bundle proved against a wall-clock epoch cannot
-be reproduced the next day.
-
-**`manifest.issuer`** is the party legally responsible for the assertions.
-Required for version 3.0.0. Set `manifest.version` to `"2.1.0"` to keep
-producing the previous bundle shape while you migrate.
-
-**`lists`** may be left empty: allowlists resolve from the signed registry
-under `security.registryDir`, which retains every version that was ever
-authoritative. A bare `path` to a `trusset-list-commit` file still works but
-warns, because superseded versions of such a file are not kept and an old
-proof's root cannot then be resolved back to the set it committed to.
-
-A field may also carry **several predicate instances** by giving an array. Each becomes its own leaf with its own params hash:
-
-```json
-"dateOfBirth": [
-  { "circuit": "age_threshold", "params": { "minAgeYears": 18 } },
-  { "circuit": "age_threshold", "params": { "minAgeYears": 21 } }
-]
-```
-
-The first instance keeps the bare field name; later ones get a deterministic params-derived suffix (`dateOfBirth@7665d`). `commitment_only` produces a hiding commitment and a leaf hash with no STARK, for identity fields where there is no predicate worth proving - see `docs/CIRCUITS.md` for why that is the right default for names and document numbers.
-
-## Input Format Example
-
-**JSON:**
+Drop `.json` or `.csv` files in `input/`. Both shapes are the same fields.
 
 ```json
 [
@@ -237,85 +208,292 @@ The first instance keeps the bare field name; later ones get a deterministic par
     "nationality": "DEU",
     "documentType": "PASSPORT",
     "documentNumber": "P12345678",
-    "documentIssuingCountry": "DEU"
+    "documentIssuingCountry": "DEU",
+    "softExpiryDays": 365,
+    "hardExpiryDays": 730,
+    "evidenceDate": "2026-08-01"
   }
 ]
 ```
-
-**CSV:**
 
 ```csv
 walletAddress,country,investorType,firstName,lastName,dateOfBirth,nationality,documentType,documentNumber,documentIssuingCountry
 0xabcdef0123456789abcdef0123456789abcdef01,DEU,PROFESSIONAL,Alice,Anderson,1985-04-12,DEU,PASSPORT,P12345678,DEU
 ```
 
-## Output Format Example
+`evidenceDate` is optional and says when you examined this subject's documents
+— usually not the day you ran the batch. `softExpiryDays` and `hardExpiryDays`
+are passthrough for the issuer backend; the real expiry model is
+[`validity`](#validity--how-long-the-claim-holds) in your config.
+
+**A blank column takes the configured default. A column with something the
+tool can't read fails the row.** A typo'd `PROFESSIONAL_INVESTOR` is a
+quarantined row, not a silent downgrade to `RETAIL`.
+
+---
+
+## Output
 
 ```
 output/
 ├── 0xAbCd.../
-│   ├── kycHash.hex              # 0x-prefixed Rescue Merkle root
-│   ├── manifest.json            # signed bundle manifest
-│   ├── manifest.sig             # ed25519 signature (sibling)
-│   ├── proofs/
-│   │   ├── dateOfBirth.bin      # zk-STARK proof binding to commitment
-│   │   ├── firstName.bin        # zero-length for commitment_only leaves
-│   │   └── ...
-│   └── secrets.enc              # xsalsa20-poly1305 encrypted witness blob
-└── kyc_hashes_<timestamp>.csv   # batched index for the Trusset uploader
+│   ├── kycHash.hex          # the root you publish
+│   ├── manifest.json        # what was asserted, by whom, on what evidence
+│   ├── manifest.sig         # ed25519 over a canonical view of the manifest
+│   ├── proofs/*.bin         # one STARK per proving leaf; 0 bytes for commitment-only
+│   └── secrets.enc          # encrypted witnesses — operator-private, never ship it
+├── kyc_hashes_<ts>.csv      # row per subject, for the uploader
+├── failures.csv             # only when something failed
+└── audit.log                # per-run event log, no PII
+
+config/registry/             # append-only, each with a detached .sig
+├── lists/<id>.json          # every allowlist version ever authoritative
+├── root_history.json        # which root you published, at which block
+└── revocations.json         # lapses and voidances
 ```
 
-The batched CSV preserves the v1 row schema:
+Failures land in two stages. Bad input (malformed wallet, unreadable tier) is
+quarantined before the prover starts. Predicate failures (under age, not in
+the allowlist) fail that subject and let the rest of the batch through. Both
+end up in `failures.csv` with a stage column.
 
-```csv
-walletAddress,country,investorType,softExpiryDays,hardExpiryDays,kycHash,index
-0xAbCd...,DEU,PROFESSIONAL,365,730,0x9f1c...,1
+Failure messages name the leaf and the fix, and never echo the subject's
+value — `failures.csv` travels, and `nationality` is exactly what the proof
+exists to keep private.
+
+---
+
+## Configuration
+
+`npm run init` writes a complete `config.json`. Four parts are worth
+understanding.
+
+### `predicates` — what to prove about each field
+
+```json
+"investorType": {
+  "circuit": "tier_threshold",
+  "params": { "minTier": "PROFESSIONAL" },
+  "descriptor": {
+    "legalBasis": {
+      "framework": "MiFID_II",
+      "reference": "Annex II Section I — professional clients",
+      "assertion": "Subject is categorised at or above professional client"
+    },
+    "evidenceClass": "DOCUMENTARY"
+  },
+  "validity": { "days": 730 }
+}
 ```
 
-Each row maps directly to the `/customers/api/identity/verify` request body in the Trusset issuer backend.
+Five circuits:
 
-Note that `country` and `investorType` travel in cleartext here because the backend needs them for storage and for on-chain transfer rules. The zk layer binds those values but does not hide them in this pipeline; each manifest leaf records a `disclosure` class saying so. See the disclosure table in [docs/SECURITY.md](docs/SECURITY.md).
+| Circuit | Proves | Use for |
+|---|---|---|
+| `age_threshold` | value is at least N days old, as of the batch date | `dateOfBirth` |
+| `set_membership` | value is in a committed allowlist | `country`, `nationality` |
+| `tier_threshold` | value is at or above a tier floor | `investorType` |
+| `preimage_knowledge` | you know an opening of the commitment | rarely what you want |
+| `commitment_only` | a hiding commitment, no STARK | names, document numbers |
+
+`commitment_only` is the right default for identity fields: there is no
+predicate worth proving about a surname, and it costs zero prove time and zero
+proof bytes. [docs/CIRCUITS.md](docs/CIRCUITS.md) explains why
+`preimage_knowledge` usually isn't what you want.
+
+One field can carry **several predicates** — each becomes its own leaf:
+
+```json
+"dateOfBirth": [
+  { "circuit": "age_threshold", "params": { "minAgeYears": 18 }, "descriptor": {...}, "validity": {...} },
+  { "circuit": "age_threshold", "params": { "minAgeYears": 21 }, "descriptor": {...}, "validity": {...} }
+]
+```
+
+The first keeps the bare field name; later ones get a stable suffix
+(`dateOfBirth@7665d`).
+
+### `descriptor` — what the threshold *means*
+
+Required. Without it a leaf says `minTier: 2` and nothing else, which is not
+something a reader can act on years later.
+
+- **`legalBasis`** — `framework` (e.g. `MiFID_II`, `AMLD5`, `REG_D`,
+  `NATIONAL`), `reference` (the provision), `assertion` (one line, your words).
+- **`evidenceClass`** — how you checked. One of `SELF_ATTESTED`,
+  `DOCUMENTARY`, `THIRD_PARTY_RELIANCE`, `AUTHORITATIVE_SOURCE`,
+  `CRYPTOGRAPHIC`, `PHYSICAL_PRESENCE`.
+- **`issuingParty`** — defaults to `"self"`. Name a different firm when they
+  did the verification under a reliance arrangement.
+
+Put shared values in `claims.defaults` and override per predicate.
+
+The descriptor is **hashed into the leaf**, so editing it changes the root and
+breaks the signature. It's evidence, not a comment.
+
+### `validity` — how long the claim holds
+
+```json
+"validity": { "days": 365 }                  // window from the batch date
+"validity": { "until": "2027-12-31" }        // fixed end
+"validity": { "openEnded": true }            // only a revocation can end it
+```
+
+`basisAsOfOffsetDays` (or the per-subject `evidenceDate` column) records when
+you examined the evidence — deliberately separate from when the claim starts,
+because the gap between them is the staleness a reviewer wants to see.
+
+### `security` and `manifest`
+
+```json
+"security": {
+  "epochDaysSource": "fixed:20689",     // or "env:TRUSSET_KYC_EPOCH_DAYS". Pin it.
+  "registryDir": "config/registry",
+  "deterministic": true
+},
+"manifest": {
+  "version": "3.0.0",                   // "2.1.0" keeps the old bundle shape
+  "issuer": { "name": "...", "identifierScheme": "LEI", "identifier": "...",
+              "jurisdiction": "DE", "keyId": "issuing-2026-08" }
+}
+```
+
+`manifest.issuer` is who is legally responsible. Required for v3 bundles.
+
+Allowlists resolve from the signed registry, so `lists` can be left empty. A
+bare `path` to a `trusset-list-commit` file still works but warns: superseded
+versions of a plain file aren't kept, and an old proof's root then can't be
+traced back to the set it committed to.
+
+---
+
+## How it works
+
+Each field becomes a **leaf**. Its value is committed with a hiding
+Rescue-Prime commitment and a fresh per-leaf nonce, a STARK proves the
+predicate about that commitment, and the leaf hash binds:
+
+```
+leaf_hash = Rescue( LEAF_TAG ‖ field ‖ circuit_id ‖ wallet ‖ epochDays
+                    ‖ commitment ‖ public_digest ‖ proof_digest
+                    [‖ binding_digest] )     ← the claim descriptor + validity
+```
+
+Leaves are sorted, padded to a power of two, and merged into a Rescue-Prime
+Merkle root. That root is your `kycHash`.
+
+Because the wallet, the batch date, the circuit id, and the descriptor are all
+inside the leaf hash, a proof can't be replayed for another subject, another
+date, another predicate, or another stated meaning. Any of those changes the
+root, which breaks the signature and the on-chain anchor.
+
+Key material flows one way:
+
+```
+TRUSSET_KYC_MASTER_KEY  →  wraps a per-subject key inside secrets.enc
+                        →  per-subject seed  →  per-leaf nonce
+TRUSSET_KYC_SIGNING_KEY →  ed25519 over the manifest and the registries
+```
+
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the crate map and full data
+flow. [docs/CIRCUITS.md](docs/CIRCUITS.md) has the formal statement each
+circuit proves.
+
+---
+
+## What changed in v3
+
+If you already run v2, read
+[docs/MIGRATION_V2_TO_V3.md](docs/MIGRATION_V2_TO_V3.md). **Your existing
+bundles keep verifying, unchanged** — enforced by tests against a real v2.0.0
+fixture, not just intended.
+
+The short version of what was wrong and what fixes it:
+
+| Before | Now |
+|---|---|
+| Default batch date was the wall clock, so a bundle couldn't be reproduced the next day | Pinned dates required; `utc_today` refused outside a dev flag |
+| Rotating an allowlist overwrote it — old proofs' roots had no retrievable meaning | Append-only signed registry; every version keeps its values, and each leaf records which one it used |
+| A leaf said `minAgeDays: 6570` and nothing about what rule that was | Legal basis, warranting party, evidence class, and validity, hashed into the leaf |
+| No bundle said who issued it | `manifest.issuer`, plus the SHA-256 of the prover binary that built it |
+| No way to ask what was true at a past block | `--as-of-block` / `--as-of-date`, resolved from your own signed root history |
+| No way to say a claim ended, or was never valid | Separate signed records; `lapsed` and `void_ab_initio` are distinct and can't be conflated |
+| A typo'd `investorType` was silently rewritten to the default and signed | The row is quarantined |
+| `--skip-proofs` proved everything and threw it away | Actually skips proving; 33 s → 0.8 s on a test batch |
+| The README told you to verify with `--public-key <hex>` and nothing printed that hex | `init` and `show` both print it; it's in the manifest too |
+
+---
 
 ## Security
 
-> All operations run entirely on your local machine. The master key never leaves the host.
+Everything runs locally. No outbound network calls, at any point, including
+verification.
 
-| Feature | Details |
-|---------|---------|
-| **Local only** | No outbound network calls during proving |
-| **Auto cleanup** | Input cleared after processing |
-| **Hiding commitments** | Per-leaf 32-byte nonces derived from an independent per-subject key |
-| **Key wrapping** | The master key wraps each subject key inside `secrets.enc` and derives nothing else, so one compromise no longer recovers every nonce ever issued |
-| **Domain separation** | Nine 32-byte tags (`LEAF`, `NODE`, `PUB-DIGEST`, `PRF-DIGEST`, `SET-LEAF`, `SET-NODE`, `COMMIT`, `MERKLE-PAD`, `MERKLE-ROOT`) enforce non-collision across primitives |
-| **Manifest signing** | ed25519 over a sentinel-`createdAt` canonical view - byte-identical signatures across runs |
-| **Root anchoring** | A counterparty can verify against the on-chain `kycHash` instead of pinning the operator key |
-| **Encrypted at rest** | `secrets.enc` is xsalsa20-poly1305 (libsodium-compatible), payload key wrapped under the master key |
-| **Determinism** | `epochDaysSource` must be pinned; with a fixed master key two runs are byte-identical. An unpinned wall-clock epoch is refused outside an explicit development flag |
-| **Responsibility** | Every manifest records the issuing institution, its identifier and jurisdiction, the signing key id, and the SHA-256 of the prover binary that produced it |
-| **Claim descriptors** | Every leaf records the legal basis it is asserted under, the party that warrants it, the evidence class the value was verified against, and the window over which it holds |
-| **List history** | Allowlist versions are append-only and signed; a proof resolves to the version it used, not to whatever the config says today |
-| **Revocation** | Lapse and voidance are separate signed records. A revoked bundle keeps verifying — the proof is a true record of what was asserted — and reports as not entitled |
-| **Archives** | One integrity-checked file carries the bundles, the list versions they depend on, the root history, and the revocations. It verifies with no access to the operator |
-| **Cryptographic stack** | Goldilocks field, Rescue-Prime hash, Winterfell STARK, all PQ-friendly |
+| | |
+|---|---|
+| **Hiding commitments** | 32-byte per-leaf nonces from an independent per-subject key — low-entropy fields like `dateOfBirth` aren't rainbow-tableable from an inclusion proof |
+| **Key wrapping** | The master key only wraps the per-subject key inside `secrets.enc`; one compromise doesn't recover every nonce ever issued |
+| **Domain separation** | Ten 32-byte tags, pairwise-distinct at compile time |
+| **Replay protection** | Wallet, batch date, circuit id, and descriptor all inside the leaf hash |
+| **Signed manifests** | ed25519 over a canonical view with a sentinel timestamp, so signatures are byte-identical across runs |
+| **Root anchoring** | Verify against the on-chain `kycHash` with no key pinning at all |
+| **Encrypted at rest** | `secrets.enc` is XSalsa20-Poly1305, libsodium-compatible, payload key wrapped under the master key |
+| **Determinism** | Pinned date + fixed master key ⇒ byte-identical reruns. Any OS-entropy draw during a deterministic run aborts |
+| **Append-only records** | List versions, root anchors, and revocations are signed and never rewritten |
+| **Post-quantum-friendly** | Goldilocks field, Rescue-Prime hash, Winterfell STARK. The ed25519 manifest signature is not PQ — root-anchored verification sidesteps it |
 
-Detailed security model: see [docs/SECURITY.md](docs/SECURITY.md).
+**Look after two things:** `.trusset/keys.env` (mode 0600, never commit it —
+lose it and you can't reproduce or decrypt anything) and your `secrets.enc`
+files (the only copy of witness material under non-deterministic issuance).
 
-## Additional Documentation
+Full threat model, key hierarchy, and per-field disclosure table:
+[docs/SECURITY.md](docs/SECURITY.md).
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - crate map, data flow, bundle artifact contract
-- [docs/CIRCUITS.md](docs/CIRCUITS.md) - formal predicate statements per circuit and leaf mode
-- [docs/SECURITY.md](docs/SECURITY.md) - threat model, key hierarchy, per-field disclosure, allowlist rotation
-- [docs/MIGRATION_V2_TO_V3.md](docs/MIGRATION_V2_TO_V3.md) - what changes for an operator who already has bundles in the field
-- [docs/MIGRATION_FROM_V1.md](docs/MIGRATION_FROM_V1.md) - v1 upgrade path and the v2.0 to v2.1 changes
-- [docs/AUDIT_PREP.md](docs/AUDIT_PREP.md) - spec §12 traceability matrix
-- [docs/PERFORMANCE.md](docs/PERFORMANCE.md) - measured prove/verify times and artifact sizes, with hardware
-- [docs/RELEASE_GATE.md](docs/RELEASE_GATE.md) - v2.1.0 release-gate results
-- [docs/FUTURE_WORK.md](docs/FUTURE_WORK.md) - deliberately deferred design directions
+---
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `epochDaysSource is "utc_today"` refusal | Working as intended. Pin it: `"fixed:<today>"`. `init` does this for you |
+| `TRUSSET_KYC_MASTER_KEY is not set` | `set -a && . ./.trusset/keys.env && set +a` — needed in each new shell |
+| `manifest.issuer: missing` | v3 bundles record who's responsible. Run `npm run init`, or set `manifest.version` to `"2.1.0"` |
+| `predicates.X.descriptor is missing` | Every predicate needs a legal basis and evidence class. `init` writes starting values to edit |
+| `list "X" ... has no source` | `npm run list-version -- --list-id X --source <file>` |
+| `E_LIST_MEMBER_MISSING` | The subject's value isn't in the allowlist. Add it and record a new version, or exclude the subject |
+| `Entitled: NO` but `Verifies: PASS` | The proof is fine; the claim lapsed, was voided, or is outside its validity window. The per-leaf status says which |
+| `cargo not found` | Install Rust from [rustup.rs](https://rustup.rs). There are no prebuilt binaries |
+
+`npm start -- --dry-run` reports every problem in a batch at once, so you
+rarely need to fix these one at a time.
+
+---
+
+## Documentation
+
+| | |
+|---|---|
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Crate map, data flow, artifact contract |
+| [CIRCUITS.md](docs/CIRCUITS.md) | What each circuit actually proves, and the v3 leaf binding |
+| [SECURITY.md](docs/SECURITY.md) | Threat model, key hierarchy, disclosure table, allowlist rotation |
+| [MIGRATION_V2_TO_V3.md](docs/MIGRATION_V2_TO_V3.md) | Upgrading with bundles already in the field |
+| [MIGRATION_FROM_V1.md](docs/MIGRATION_FROM_V1.md) | The v1 → v2 path |
+| [PERFORMANCE.md](docs/PERFORMANCE.md) | Measured times and sizes, with the hardware caveats stated |
+| [RELEASE_GATE.md](docs/RELEASE_GATE.md) | v3.0.0 gate results, verbatim |
+| [AUDIT_PREP.md](docs/AUDIT_PREP.md) | Spec §12 traceability matrix |
+| [FUTURE_WORK.md](docs/FUTURE_WORK.md) | What was deliberately left out, and why |
+
+### Contributing
+
+```bash
+bash scripts/ci_smoke.sh            # fmt, clippy, tests, and all four e2e suites
+bash scripts/ci_smoke.sh --quick    # fmt, clippy, tests only
+```
 
 ---
 
 <div align="center">
 
-Built by [Trusset](https://trusset.org) · [Report an Issue](https://trusset.org/contact)
+Built by [Trusset](https://trusset.org) · [Report an issue](https://trusset.org/contact)
 
 </div>

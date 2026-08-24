@@ -3,7 +3,7 @@
 use crate::VerifyError;
 use std::collections::BTreeMap;
 use std::path::Path;
-use trusset_bundle_format::manifest::Manifest;
+use trusset_bundle_format::manifest::{is_safe_proof_path, Manifest};
 
 /// All files from a bundle, materialized in memory.
 #[derive(Debug, Clone)]
@@ -29,6 +29,14 @@ pub fn load_bundle(path: &Path) -> Result<LoadedBundle, VerifyError> {
     let mut proofs = BTreeMap::new();
     let mut layout_ok = !kyc_hash_file_text.is_empty() && signature.is_some();
     for leaf in &manifest.leaves {
+        // The manifest is untrusted input and `proofPath` is the only field
+        // in it that reaches the filesystem. Reject anything that is not a
+        // plain `proofs/<name>` before joining, so a hand-written manifest
+        // cannot make the verifier read outside the bundle directory.
+        if !is_safe_proof_path(&leaf.proof_path) {
+            layout_ok = false;
+            continue;
+        }
         let proof_full_path = path.join(&leaf.proof_path);
         match std::fs::read(&proof_full_path) {
             Ok(b) => {
@@ -63,7 +71,7 @@ pub fn loaded_from_parts(
         && manifest
             .leaves
             .iter()
-            .all(|l| proofs.contains_key(&l.proof_path));
+            .all(|l| is_safe_proof_path(&l.proof_path) && proofs.contains_key(&l.proof_path));
     Ok(LoadedBundle {
         manifest,
         kyc_hash_file_text: kyc_hash_file_text.to_string(),

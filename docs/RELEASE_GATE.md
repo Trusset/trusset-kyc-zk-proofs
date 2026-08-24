@@ -165,7 +165,63 @@ has not been updated keeps working.
 re-serializes the typed manifest struct to recompute the signing view will
 drop fields it does not know about and compute the wrong bytes.
 
-### 9. Performance
+### 9. Security review
+
+Run over the v3 surface before the gate. Three findings, all fixed and
+regression-tested; the results below are from after the fixes.
+
+| Check | Result |
+|---|---|
+| `unsafe` code | None. `unsafe_code = "forbid"` at the workspace level |
+| `unwrap` / `expect` / `panic!` in new library code | None outside `#[cfg(test)]` |
+| Key material reaching stdout, stderr, `audit.log`, or `failures.csv` | None. Keys are never interpolated into any output |
+| Witness values reaching `audit.log` or `failures.csv` | None. Failure messages name the leaf and the asserted threshold only |
+| Key file permissions | `.trusset/keys.env` is written 0600 and chmod'd 0600 |
+| Archive embedding `secrets.enc` | Off unless `--include-secrets` is passed |
+| `cargo` dependency surface | 130 crates, all pinned in `Cargo.lock` |
+| `npm audit --omit=dev` | **0 vulnerabilities** |
+
+**Finding 1 — path traversal via `proofPath` (fixed).** A manifest is
+untrusted input, and `proofPath` was the one field in it that reached the
+filesystem: the verifier's loader and the archive builder both joined it onto
+a directory without validation. A manifest carrying
+`proofPath: "../../../etc/passwd"` would have made a verifier read an
+arbitrary file. Impact was limited — the contents only ever feed a digest
+comparison that then fails — but whether the read succeeds is observable and
+the path appears in error output, which is an arbitrary-file-read primitive by
+any reasonable reading. This predates v3.
+
+Fixed with `is_safe_proof_path` in `bundle-format`, enforced at all three read
+points: the verifier's disk loader, the archive builder, and the archive's own
+structure check. It requires a plain `proofs/<name>` entry — no separators, no
+parent references, no leading dot, no NUL — which is exactly what the prover
+writes, so no real bundle is affected. Regression test:
+`a_traversing_proof_path_is_refused_rather_than_followed`.
+
+**Finding 2 — `ethers` dependency (removed).** Fifteen npm advisories, one
+high (`ws`, uninitialized memory disclosure), all transitive under `ethers@5`,
+which was present for exactly two functions. None was reachable — the tool
+opens no sockets — but a tool whose security model is "no outbound network
+calls" should not ship a WebSocket client, and it would have appeared in every
+downstream supply-chain scan.
+
+Replaced with `@noble/hashes` plus a fifteen-line EIP-55 implementation. The
+CLI's runtime dependency count went from roughly twenty packages to four, and
+`npm audit` from fifteen advisories to zero. Verified by differential testing
+against `ethers` over 20,012 inputs with zero divergence, and by confirming
+bundle output is byte-identical across the swap — `kycHash`, every proof byte,
+and `secrets.enc` unchanged, with only `toolchain.proverSha256` moving because
+the prover binary was rebuilt. That is the field doing its job.
+
+**Finding 3 — unchecked arithmetic (hardened).** Two spots where an
+underflow was unreachable but not locally evident: closing a superseded list
+version's window (`effective_from - 1`, guarded by an earlier ordering check)
+and computing `basisAsOf` from an offset. A wrap in the first would have set a
+superseded version's window to end at `u64::MAX`, leaving it authoritative
+forever. Both now check explicitly and return a named error. Regression test:
+`a_first_version_on_epoch_day_zero_is_allowed`.
+
+### 10. Performance
 
 Measured, not projected. See [PERFORMANCE.md](PERFORMANCE.md) for the full
 tables and reproduction commands. Headlines:
@@ -182,6 +238,12 @@ tables and reproduction commands. Headlines:
 The circuits are unchanged, so the prove-time difference is noise plus a
 warmer process. The dry-run figure is a real change: `--skip-proofs` used to
 run the full STARK and discard it.
+
+### 11. Documentation
+
+README rewritten around the operator's path — what the tool is, a five-command
+quick start, then reference. Every command in it was executed against the
+shipped binaries rather than transcribed.
 
 ## What this gate does not cover
 

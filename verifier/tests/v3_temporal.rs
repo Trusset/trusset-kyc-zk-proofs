@@ -831,3 +831,56 @@ fn the_claim_report_carries_the_legal_basis_and_evidence_class() {
     assert_eq!(claim.validity_from_date, "2026-08-24");
     assert_eq!(claim.basis_as_of_date, "2026-08-14");
 }
+
+// =====================================================================
+// Untrusted-manifest handling
+// =====================================================================
+
+/// A manifest is untrusted input, and `proofPath` is the only field in it that
+/// reaches the filesystem. A traversing path must not turn a verifier into an
+/// arbitrary-file-read primitive: whether the read succeeds is observable, and
+/// the path appears in error output.
+#[test]
+fn a_traversing_proof_path_is_refused_rather_than_followed() {
+    let f = build();
+
+    // A file outside the bundle that a traversing path could reach.
+    let outside = f.dir.parent().unwrap().join("outside-the-bundle.txt");
+    std::fs::write(&outside, b"should never be read").unwrap();
+
+    let path = f.dir.join("manifest.json");
+    let mut manifest: Manifest = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    manifest.leaves[0].proof_path = "../outside-the-bundle.txt".to_string();
+    std::fs::write(
+        &path,
+        trusset_bundle_format::manifest::canonical_disk_bytes(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let report = verify_bundle(
+        &f.dir,
+        &opts(f.public_key, AsOf::Now, TemporalContext::default(), EPOCH),
+    )
+    .unwrap();
+
+    assert!(!report.layout_ok, "a traversing proofPath must fail layout");
+    assert!(!report.overall_pass);
+    assert!(!report.temporal.entitled);
+}
+
+/// The same check must not reject what the prover actually writes, including
+/// the params-suffixed names multi-instance predicates produce.
+#[test]
+fn ordinary_proof_paths_are_still_accepted() {
+    use trusset_bundle_format::manifest::is_safe_proof_path;
+    for name in [
+        "proofs/firstName.bin",
+        "proofs/documentIssuingCountry.bin",
+        "proofs/dateOfBirth@7665d.bin",
+    ] {
+        assert!(is_safe_proof_path(name), "should accept {}", name);
+    }
+    for name in ["proofs/../secrets.enc", "/etc/passwd", "proofs/sub/x.bin"] {
+        assert!(!is_safe_proof_path(name), "should reject {}", name);
+    }
+}

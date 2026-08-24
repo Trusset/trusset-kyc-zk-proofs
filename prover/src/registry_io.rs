@@ -191,10 +191,24 @@ pub fn append_list_version(
     }
 
     let next_version = registry.versions.len() as u32 + 1;
-    if let Some(current) = registry.versions.last_mut() {
+    if registry.versions.last().is_some() {
         // The outgoing version stops being authoritative the day before the
         // new one starts, so the two windows abut with no gap and no overlap.
-        current.effective_until = Some(effective_from - 1);
+        //
+        // The guard above already establishes `effective_from > current
+        // .effective_from >= 0`, so this cannot underflow. Checked rather
+        // than assumed: a wrap here would silently set the superseded
+        // version's window to end on epoch day u64::MAX, leaving it
+        // authoritative forever.
+        let closes_on = effective_from.checked_sub(1).ok_or_else(|| {
+            ProverError::new(
+                ErrorCode::Config,
+                "a new list version cannot become effective on epoch day 0: there would be no                  day on which to close the version it supersedes.",
+            )
+        })?;
+        if let Some(current) = registry.versions.last_mut() {
+            current.effective_until = Some(closes_on);
+        }
     }
 
     registry.versions.push(ListVersionRecord {
@@ -408,6 +422,14 @@ mod tests {
         append(&paths, &["DEU", "FRA"], 20000).unwrap();
         let err = append(&paths, &["DEU", "FRA"], 20700).unwrap_err();
         assert!(err.message.contains("already has exactly these values"));
+    }
+
+    #[test]
+    fn a_first_version_on_epoch_day_zero_is_allowed() {
+        // Nothing is superseded, so there is no window to close.
+        let dir = tmp();
+        let paths = RegistryPaths::new(dir.path());
+        assert_eq!(append(&paths, &["DEU", "FRA"], 0).unwrap().version, 1);
     }
 
     #[test]

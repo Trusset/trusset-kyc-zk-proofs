@@ -239,6 +239,13 @@ impl Archive {
                 return Err(ArchiveError::ManifestBytesDiverge(s.subject_id.clone()));
             }
             for leaf in &s.manifest.leaves {
+                if !crate::manifest::is_safe_proof_path(&leaf.proof_path) {
+                    return Err(ArchiveError::Malformed(format!(
+                        "subject {}: manifest names proof path {:?}, which is not a plain \
+                         `proofs/<name>` entry",
+                        s.subject_id, leaf.proof_path
+                    )));
+                }
                 let Some(b64) = s.proofs.get(&leaf.proof_path) else {
                     return Err(ArchiveError::MissingProof {
                         subject: s.subject_id.clone(),

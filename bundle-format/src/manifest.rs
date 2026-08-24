@@ -264,6 +264,36 @@ pub struct Manifest {
     pub toolchain: Option<ToolchainBlock>,
 }
 
+/// Whether a manifest's `proofPath` is safe to join onto a directory.
+///
+/// A manifest read from disk or out of an archive is untrusted input: it may
+/// have been written by anyone. `proofPath` is the one field that reaches the
+/// filesystem, so a value like `../../../etc/passwd` would turn a verifier
+/// into an arbitrary-file-read primitive — the contents only ever feed a
+/// digest comparison, but whether the read succeeds is observable, and the
+/// path appears in error messages.
+///
+/// The prover only ever writes `proofs/<leafName>.bin` with a leaf name the
+/// config layer already constrains, so this rejects nothing a real bundle
+/// contains. Enforced on the read side because that is where the input stops
+/// being ours.
+#[must_use]
+pub fn is_safe_proof_path(path: &str) -> bool {
+    let Some(name) = path.strip_prefix("proofs/") else {
+        return false;
+    };
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+    // No separators, no parent references, no absolute or drive-relative
+    // forms, no NUL. Leaf names come from `LEAF_NAME_SAFE` in the CLI, so the
+    // permitted set is exactly that plus the `.bin` suffix.
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '@' | '-'))
+        && !name.contains("..")
+        && !name.starts_with('.')
+}
+
 impl Manifest {
     /// The Merkle construction this manifest's `kycHash` was computed
     /// with. Absent means the v1 construction (pre-v2.1 bundles).
@@ -386,6 +416,39 @@ mod tests {
             canonical_signing_bytes(&m).unwrap(),
             canonical_signing_bytes(&parsed).unwrap()
         );
+    }
+
+    #[test]
+    fn safe_proof_paths_accept_what_the_prover_writes() {
+        for name in [
+            "proofs/firstName.bin",
+            "proofs/dateOfBirth@7665d.bin",
+            "proofs/document_number.bin",
+            "proofs/a-b.bin",
+        ] {
+            assert!(is_safe_proof_path(name), "should accept {}", name);
+        }
+    }
+
+    #[test]
+    fn safe_proof_paths_reject_traversal_and_absolute_forms() {
+        for name in [
+            "../../../etc/passwd",
+            "proofs/../../../etc/passwd",
+            "proofs/../secrets.enc",
+            "proofs/sub/dir.bin",
+            "/etc/passwd",
+            "proofs//etc/passwd",
+            "secrets.enc",
+            "proofs/",
+            "",
+            "proofs/.hidden",
+            "proofs/a\0b.bin",
+            "proofs/a b.bin",
+            "C:\\proofs\\x.bin",
+        ] {
+            assert!(!is_safe_proof_path(name), "should reject {:?}", name);
+        }
     }
 
     #[test]

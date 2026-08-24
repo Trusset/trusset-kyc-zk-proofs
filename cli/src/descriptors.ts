@@ -250,6 +250,13 @@ export function resolveValidity(
       'use 0 when the evidence was examined on the batch date, or the number of days before it',
     );
   }
+  if (subjectEvidenceDate === undefined && offset > epochDays) {
+    throw new DescriptorError(
+      `${configPath}.basisAsOfOffsetDays`,
+      `is ${offset}, which is more than the batch as-of date itself (epoch day ${epochDays}, ${epochDaysToIsoDate(epochDays)})`,
+      'the evidence date would fall before 1970-01-01; reduce the offset, or pin a later security.epochDaysSource',
+    );
+  }
   const basisAsOf = subjectEvidenceDate ?? epochDays - offset;
 
   if (basisAsOf > epochDays) {

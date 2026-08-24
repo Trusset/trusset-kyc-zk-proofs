@@ -9,10 +9,10 @@
     "test": "tsc && node --test dist/__tests__/*.test.js"
   },
   "dependencies": {
+    "@noble/hashes": "^1.5.0",
     "commander": "^12.1.0",
     "csv-parse": "^5.5.6",
-    "csv-stringify": "^6.5.0",
-    "ethers": "^5.7.2"
+    "csv-stringify": "^6.5.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

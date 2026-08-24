@@ -3,7 +3,7 @@
 // collected, not thrown. This implements plan edge case 4 ("partial batch
 // failure") — one bad row no longer kills a 10k-row batch.
 
-import { ethers } from 'ethers';
+import { getAddress, isAddress } from './address';
 import { parseDateToEpochDays } from './dates';
 import { Config, InvestorTypeName, KycFieldValue, KycRecord } from './types';
 
@@ -184,7 +184,7 @@ function validateOneRecord(
       };
     }
     const walletTrim = walletRaw.trim();
-    if (!ethers.utils.isAddress(walletTrim)) {
+    if (!isAddress(walletTrim)) {
       return {
         error: {
           rowNum,
@@ -195,7 +195,7 @@ function validateOneRecord(
         },
       };
     }
-    const walletAddress = ethers.utils.getAddress(walletTrim);
+    const walletAddress = getAddress(walletTrim);
 
     const countryRaw = normalizeValue(record[m.countryField]);
     if (!countryRaw || countryRaw.length < 2) {

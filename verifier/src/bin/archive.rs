@@ -26,7 +26,9 @@ use std::process::ExitCode;
 use trusset_bundle_format::archive::{
     encode_b64, finalize, sha256_hex, Archive, ArchivedSubject, ARCHIVE_VERSION,
 };
-use trusset_bundle_format::manifest::{canonical_disk_bytes, IssuerBlock, Manifest};
+use trusset_bundle_format::manifest::{
+    canonical_disk_bytes, is_safe_proof_path, IssuerBlock, Manifest,
+};
 use trusset_bundle_format::registry::{ListRegistry, RevocationLog, RootHistory};
 
 const USAGE: &str = "\
@@ -277,6 +279,17 @@ fn cmd_build(o: &Options) -> Result<(), String> {
 
         let mut proofs = BTreeMap::new();
         for leaf in &manifest.leaves {
+            // Archiving reads every path the manifest names. A bundle received
+            // from elsewhere is untrusted, so a traversing `proofPath` must not
+            // be able to pull a file from outside the bundle into the archive.
+            if !is_safe_proof_path(&leaf.proof_path) {
+                return Err(format!(
+                    "{}: manifest names proof path {:?}, which is not a plain `proofs/<name>` \
+                     entry. Refusing to read outside the bundle directory.",
+                    dir.display(),
+                    leaf.proof_path
+                ));
+            }
             let p = dir.join(&leaf.proof_path);
             let bytes = std::fs::read(&p)
                 .map_err(|e| format!("{}: {}: {}", dir.display(), leaf.proof_path, e))?;

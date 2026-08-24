@@ -470,16 +470,30 @@ program
 program
   .command('archive')
   .description('Produce one self-contained, integrity-checked file that verifies without this machine')
-  .requiredOption('--output <file>', 'Archive path to write, e.g. batch-2026Q3.tka')
+  .option('--output <file>', 'Archive path to write, e.g. batch-2026Q3.tka')
   .option('--all <dir>', 'Every bundle directory under <dir>')
   .option('--bundle <dir...>', 'Specific bundle directories')
   .option('--archive-id <label>', 'Operator label for the batch')
   .option('--include-secrets', 'Embed each bundle secrets.enc (operator-private; off by default)')
-  .option('--inspect', 'Read an existing archive instead of building one')
+  .option('--inspect [file]', 'Read an existing archive instead of building one')
   .action((options) => {
     if (options.inspect) {
-      runNative('trusset-archive', ['inspect', '--archive', options.output]);
+      // `--inspect` takes the path directly, and also accepts the `--output`
+      // form so the same file argument works whichever way round it is written.
+      const target = typeof options.inspect === 'string' ? options.inspect : options.output;
+      if (!target) {
+        fail(false, new Error('archive --inspect needs a file: pass it as `--inspect <file>`.'));
+      }
+      runNative('trusset-archive', ['inspect', '--archive', target]);
       return;
+    }
+    if (!options.output) {
+      fail(
+        false,
+        new Error(
+          'archive needs --output <file>.\n  Fix: npm run archive -- --output batch.tka --all output',
+        ),
+      );
     }
     const args = ['build', '--output', options.output];
     for (const b of options.bundle ?? []) args.push('--bundle', b);
