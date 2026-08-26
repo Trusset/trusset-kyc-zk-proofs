@@ -57,9 +57,14 @@ function fixtureConfig(): ResolvedConfig {
     lists: {},
     masterKeyEnv: 'TRUSSET_KYC_MASTER_KEY',
     signingKeyEnv: 'TRUSSET_KYC_SIGNING_KEY',
-    epochDaysSource: 'utc_today',
+    epochDaysSource: 'fixed:20700',
     deterministic: true,
     configHashHex: '0x' + '0'.repeat(64),
+    manifestVersion: '3.0.0',
+    registryDir: '/nonexistent',
+    epochDays: 20700,
+    unpinnedEpoch: false,
+    evidenceDateField: 'evidenceDate',
   };
 }
 

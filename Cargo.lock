@@ -709,17 +709,19 @@ checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 
 [[package]]
 name = "trusset-bundle-format"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
+ "base64ct",
  "ed25519-dalek",
  "serde",
  "serde_json",
+ "sha2",
  "trusset-circuits-common",
 ]
 
 [[package]]
 name = "trusset-circuit-age-threshold"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "hex",
  "sha2",
@@ -734,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "trusset-circuit-preimage-knowledge"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "hex",
  "sha2",
@@ -749,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "trusset-circuit-set-membership"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "hex",
  "sha2",
@@ -764,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "trusset-circuit-tier-threshold"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "hex",
  "sha2",
@@ -779,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "trusset-circuits-common"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "hex-literal",
  "hkdf",
@@ -795,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "trusset-list-commit"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -808,7 +810,7 @@ dependencies = [
 
 [[package]]
 name = "trusset-prover"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
@@ -824,6 +826,7 @@ dependencies = [
  "trusset-circuit-set-membership",
  "trusset-circuit-tier-threshold",
  "trusset-circuits-common",
+ "trusset-list-commit",
  "unicode-normalization",
  "xsalsa20poly1305",
  "zeroize",
@@ -831,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "trusset-verifier"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "hex",
  "serde",

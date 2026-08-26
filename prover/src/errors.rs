@@ -39,6 +39,23 @@ pub enum ErrorCode {
     /// Pinned `ProofOptions` fall below the published conjectured-security
     /// floor. Raised at startup before any proving work begins.
     WeakProofOptions,
+    /// A version 3.0.0 job carries no issuer block, so the bundle would not
+    /// say who is responsible for its assertions.
+    IssuerMissing,
+    /// A leaf that requires a claim descriptor does not carry one.
+    DescriptorMissing,
+    /// A claim descriptor is present but structurally unusable (unknown
+    /// evidence class, empty legal basis, malformed party identifier).
+    DescriptorInvalid,
+    /// A validity interval is inverted, or its evidence post-dates the window
+    /// it supports.
+    ValidityInvalid,
+    /// A leaf's declared list version disagrees with the list the prover was
+    /// actually given.
+    ListVersionMismatch,
+    /// The batch ran against an unpinned wall-clock epoch without the explicit
+    /// development flag.
+    UnpinnedEpoch,
 }
 
 impl ErrorCode {
@@ -59,6 +76,12 @@ impl ErrorCode {
             ErrorCode::DeterminismViolation => "E_DETERMINISM_VIOLATION",
             ErrorCode::StubRejected => "E_STUB_REJECTED",
             ErrorCode::WeakProofOptions => "E_WEAK_PROOF_OPTIONS",
+            ErrorCode::IssuerMissing => "E_ISSUER_MISSING",
+            ErrorCode::DescriptorMissing => "E_DESCRIPTOR_MISSING",
+            ErrorCode::DescriptorInvalid => "E_DESCRIPTOR_INVALID",
+            ErrorCode::ValidityInvalid => "E_VALIDITY_INVALID",
+            ErrorCode::ListVersionMismatch => "E_LIST_VERSION_MISMATCH",
+            ErrorCode::UnpinnedEpoch => "E_UNPINNED_EPOCH",
         }
     }
 }
@@ -150,6 +173,12 @@ mod tests {
         (ErrorCode::DeterminismViolation, "E_DETERMINISM_VIOLATION"),
         (ErrorCode::StubRejected, "E_STUB_REJECTED"),
         (ErrorCode::WeakProofOptions, "E_WEAK_PROOF_OPTIONS"),
+        (ErrorCode::IssuerMissing, "E_ISSUER_MISSING"),
+        (ErrorCode::DescriptorMissing, "E_DESCRIPTOR_MISSING"),
+        (ErrorCode::DescriptorInvalid, "E_DESCRIPTOR_INVALID"),
+        (ErrorCode::ValidityInvalid, "E_VALIDITY_INVALID"),
+        (ErrorCode::ListVersionMismatch, "E_LIST_VERSION_MISMATCH"),
+        (ErrorCode::UnpinnedEpoch, "E_UNPINNED_EPOCH"),
     ];
 
     #[test]
@@ -206,6 +235,12 @@ mod tests {
                 ErrorCode::DeterminismViolation => {}
                 ErrorCode::StubRejected => {}
                 ErrorCode::WeakProofOptions => {}
+                ErrorCode::IssuerMissing => {}
+                ErrorCode::DescriptorMissing => {}
+                ErrorCode::DescriptorInvalid => {}
+                ErrorCode::ValidityInvalid => {}
+                ErrorCode::ListVersionMismatch => {}
+                ErrorCode::UnpinnedEpoch => {}
             }
         }
         // Force evaluation against ALL_CODES so the two stay in sync.
@@ -213,7 +248,7 @@ mod tests {
             assert_covered(code.clone());
         }
         // The list length must match the enum size. Update both together.
-        assert_eq!(ALL_CODES.len(), 15);
+        assert_eq!(ALL_CODES.len(), 21);
     }
 
     #[test]

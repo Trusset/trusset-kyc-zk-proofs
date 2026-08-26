@@ -12,6 +12,10 @@
 #   - WASM verifier divergence from native
 #   - Any circuit-level bug that affects public outputs
 #
+# v3 note: the run also exercises the claim-descriptor and list-version
+# bindings, which are inside the leaf hash. A descriptor that resolved
+# differently between two runs would change every root and show up here.
+#
 # Plan §7 ("The most important end-to-end test"). Run from the repo root.
 
 set -euo pipefail
@@ -45,7 +49,7 @@ CANARY_INPUT='[
   {
     "walletAddress": "0xfedcba9876543210fedcba9876543210fedcba98",
     "country": "FRA",
-    "investorType": "RETAIL",
+    "investorType": "ELIGIBLE_COUNTERPARTY",
     "firstName": "Bob",
     "lastName": "Bertrand",
     "dateOfBirth": "1992-09-30",
@@ -67,6 +71,7 @@ fail() { printf "\033[1;31m[canary]\033[0m %s\n" "$*" >&2; exit 1; }
 ensure_build() {
     if [ ! -x "$REPO_ROOT/target/release/trusset-prover" ] \
         || [ ! -x "$REPO_ROOT/target/release/trusset-verifier-cli" ] \
+        || [ ! -x "$REPO_ROOT/target/release/trusset-registry" ] \
         || [ ! -f "$REPO_ROOT/cli/dist/index.js" ]; then
         log "Building (missing release artifacts)..."
         bash "$REPO_ROOT/scripts/build.sh" >/dev/null
@@ -87,21 +92,32 @@ run_pipeline() {
         jq '.security.epochDaysSource = "env:TRUSSET_KYC_EPOCH_DAYS"' \
             "$REPO_ROOT/config.example.json" > "$work_dir/config.json"
     else
-        sed 's|"epochDaysSource": "utc_today"|"epochDaysSource": "env:TRUSSET_KYC_EPOCH_DAYS"|' \
+        sed 's|"epochDaysSource": "fixed:[0-9]*"|"epochDaysSource": "env:TRUSSET_KYC_EPOCH_DAYS"|' \
             "$REPO_ROOT/config.example.json" > "$work_dir/config.json"
     fi
 
-    # The list_commitments file is referenced relative to the working dir.
-    # Copy the whole config/ tree so paths resolve.
+    # The list source is referenced relative to the working dir. Copy the
+    # whole config/ tree so paths resolve.
     cp -r "$REPO_ROOT/config" "$work_dir/config"
+
+    # v3: allowlists resolve from the signed append-only registry. Record
+    # version 1 from the shipped source so the run has one. The registry is
+    # not committed to the repo — it carries a signature, and a signature over
+    # a test key has no business in version control.
+    (cd "$work_dir" && "$REPO_ROOT/target/release/trusset-registry" list-version \
+        --list-id country_allowlist \
+        --source config/list_commitments/country_allowlist.source.txt \
+        --effective-date "$TRUSSET_KYC_EPOCH_DAYS" \
+        --registry config/registry >/dev/null) \
+        || fail "could not record list version 1 in $work_dir"
 
     echo "$CANARY_INPUT" > "$work_dir/input/canary.json"
 
     # Run the CLI from inside work_dir so cwd-relative paths resolve to
     # the isolated copy.
     (cd "$work_dir" && \
-        node "$REPO_ROOT/cli/dist/index.js" hash >/dev/null 2>&1) \
-        || fail "pipeline run failed in $work_dir"
+        node "$REPO_ROOT/cli/dist/index.js" hash >"$work_dir/run.log" 2>&1) \
+        || { sed 's/^/    /' "$work_dir/run.log" >&2; fail "pipeline run failed in $work_dir"; }
 }
 
 # ============================ main ============================

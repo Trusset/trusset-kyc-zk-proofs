@@ -27,7 +27,11 @@ cargo build --release --workspace --locked 2>/dev/null \
 
 # ---- WASM verifier (optional) ---------------------------------------------
 
-if rustup target list --installed 2>/dev/null | grep -q '^wasm32-unknown-unknown$'; then
+# Written to a variable rather than piped into `grep -q`: under `set -o
+# pipefail`, grep closing the pipe early kills `rustup` with SIGPIPE and the
+# pipeline reports failure, which would silently skip the WASM build.
+INSTALLED_TARGETS="$(rustup target list --installed 2>/dev/null || true)"
+if printf '%s\n' "$INSTALLED_TARGETS" | grep -q '^wasm32-unknown-unknown$'; then
     log "Building WASM verifier..."
     # Use cargo rustc --crate-type=cdylib instead of declaring cdylib in
     # verifier/Cargo.toml. Declaring it there triggers a workspace-wide

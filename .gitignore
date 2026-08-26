@@ -18,5 +18,13 @@ cli/wasm/*.wasm
 cli/wasm/*.js
 !cli/wasm/.gitkeep
 
+# Operator key material. `npm run init` writes .trusset/keys.env at mode 0600
+# and appends this entry itself, but shipping it means the file is never
+# committable even if init was bypassed.
+.trusset/
+
+# Archives carry bundles and are usually shared deliberately, not committed.
+*.tka
+
 .claude
 .vscode

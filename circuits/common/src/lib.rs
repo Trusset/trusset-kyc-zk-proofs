@@ -18,8 +18,8 @@ pub mod stub_proof;
 pub use circuit_id::CircuitId;
 pub use commitment::{compute_commitment, NONCE_LEN};
 pub use domain::{
-    COMMITMENT_TAG, DOMAIN_TAG_BYTES, LEAF_TAG, MERKLE_PAD_TAG, MERKLE_ROOT_TAG, NODE_TAG,
-    PROOF_DIGEST_TAG, PUBLIC_DIGEST_TAG, SET_LEAF_TAG, SET_NODE_TAG,
+    COMMITMENT_TAG, DOMAIN_TAG_BYTES, LEAF_BIND_TAG, LEAF_TAG, MERKLE_PAD_TAG, MERKLE_ROOT_TAG,
+    NODE_TAG, PROOF_DIGEST_TAG, PUBLIC_DIGEST_TAG, SET_LEAF_TAG, SET_NODE_TAG,
 };
 pub use field::{
     bytes_to_field, field_to_bytes, nfc_canonicalize, string_to_field_canonical, Felt,

@@ -16,6 +16,10 @@ path = "src/lib.rs"
 name = "trusset-prover"
 path = "src/main.rs"
 
+[[bin]]
+name = "trusset-registry"
+path = "src/bin/registry.rs"
+
 [dependencies]
 trusset-circuits-common = { path = "../circuits/common" }
 trusset-circuit-age-threshold = { path = "../circuits/age_threshold" }
@@ -23,6 +27,7 @@ trusset-circuit-set-membership = { path = "../circuits/set_membership" }
 trusset-circuit-tier-threshold = { path = "../circuits/tier_threshold" }
 trusset-circuit-preimage-knowledge = { path = "../circuits/preimage_knowledge" }
 trusset-bundle-format = { path = "../bundle-format" }
+trusset-list-commit = { path = "../tools/list-commit" }
 
 # JSON over stdin/stdout
 serde = { version = "1", features = ["derive"] }

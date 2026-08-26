@@ -86,6 +86,7 @@ fn fixture_job(output_root: &str) -> Job {
             params_hash: preimage_params_hash(128),
             disclosure: None,
             params: None,
+            ..Default::default()
         },
         JobLeaf {
             field: "dateOfBirth".to_string(),
@@ -95,6 +96,7 @@ fn fixture_job(output_root: &str) -> Job {
             params_hash: age_params_hash(6570),
             disclosure: None,
             params: None,
+            ..Default::default()
         },
         JobLeaf {
             field: "investorType".to_string(),
@@ -104,6 +106,7 @@ fn fixture_job(output_root: &str) -> Job {
             params_hash: tier_params_hash(1),
             disclosure: None,
             params: None,
+            ..Default::default()
         },
         JobLeaf {
             field: "country".to_string(),
@@ -113,6 +116,7 @@ fn fixture_job(output_root: &str) -> Job {
             params_hash: set_params_hash("country_allowlist"),
             disclosure: None,
             params: None,
+            ..Default::default()
         },
     ];
 
@@ -135,6 +139,7 @@ fn fixture_job(output_root: &str) -> Job {
             source_sha256: "fixture-hash".to_string(),
             declared_root: None,
             declared_depth: None,
+            ..Default::default()
         },
     );
 
@@ -147,6 +152,8 @@ fn fixture_job(output_root: &str) -> Job {
         skip_proofs: false,
         subjects: vec![subject],
         list_commitments,
+        epoch_days_source: Some("fixed:20587".to_string()),
+        ..Default::default()
     }
 }
 

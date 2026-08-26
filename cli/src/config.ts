@@ -12,11 +12,23 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ageDaysFromParams } from './paramsHash';
+import { epochDaysToIsoDate, todayEpochDays } from './dates';
+import {
+  loadListRegistry,
+  listContentHash,
+  registryRoot,
+  resolveListAt,
+  ListRegistry,
+  ListVersionRecord,
+} from './registry';
+import { validateIssuer } from './descriptors';
 import {
   CircuitName,
+  ClaimsConfig,
   Config,
   Disclosure,
   EpochDaysSource,
+  IssuerConfig,
   ListsEntry,
   PredicateEntry,
   PredicateInstance,
@@ -24,6 +36,10 @@ import {
   Predicates,
   TierMap,
 } from './types';
+
+/** The manifest wire version this build emits unless the config pins another. */
+export const DEFAULT_MANIFEST_VERSION = '3.0.0';
+export const SUPPORTED_MANIFEST_VERSIONS = ['2.0.0', '2.1.0', '3.0.0'];
 
 const CONFIG_PATH = path.join(process.cwd(), 'config.json');
 
@@ -76,11 +92,35 @@ export interface ResolvedConfig {
   deterministic: boolean;
   /** Cached SHA-256 hex of canonical config (the bytes the prover sees in HKDF). */
   configHashHex: string;
+  /** Manifest wire version this run emits. */
+  manifestVersion: string;
+  /** v3 issuer block. Required when `manifestVersion` is 3.0.0. */
+  issuer?: IssuerConfig;
+  /** v3 claim defaults applied to every predicate. */
+  claims?: ClaimsConfig;
+  /** Absolute path to the registry root. */
+  registryDir: string;
+  /** Resolved batch as-of date in epochDays. */
+  epochDays: number;
+  /** True when the operator explicitly opted into an unpinned wall-clock epoch. */
+  unpinnedEpoch: boolean;
+  /** Input column carrying a per-subject evidence date, if configured. */
+  evidenceDateField: string;
+}
+
+export interface ResolveOptions {
+  /**
+   * Allow `epochDaysSource: "utc_today"`. Off by default: a batch proved
+   * against a wall-clock epoch cannot be reproduced after the day it ran,
+   * because every per-subject key and every commitment derives from that
+   * number.
+   */
+  allowUnpinnedEpoch?: boolean;
 }
 
 export interface ResolvedList {
   listId: string;
-  /** Raw values from the list-commitments JSON. */
+  /** Raw values from the list-commitments JSON or the registry version. */
   values: string[];
   /** SHA-256 of the source text file. */
   sourceSha256: string;
@@ -89,12 +129,22 @@ export interface ResolvedList {
   depth: number;
   /** Path the file was loaded from (for diagnostics). */
   resolvedPath: string;
+  /**
+   * v3: which registry version this resolved to, and the hash of its values.
+   * Absent when the list came from a bare list-commitments file with no
+   * registry behind it — in which case superseded versions are not retained
+   * and an old proof's root cannot be resolved back to a set.
+   */
+  version?: number;
+  contentHash?: string;
+  effectiveFrom?: number;
+  effectiveUntil?: number;
 }
 
-export function loadConfig(): ResolvedConfig {
+export function loadConfig(opts: ResolveOptions = {}): ResolvedConfig {
   if (!fs.existsSync(CONFIG_PATH)) {
     throw new Error(
-      `config.json not found at ${CONFIG_PATH}. Copy config.example.json and edit it.`,
+      `config.json not found at ${CONFIG_PATH}.\n  Fix: run \`npm run init\` to generate one, or copy config.example.json and edit it.`,
     );
   }
   const text = fs.readFileSync(CONFIG_PATH, 'utf-8');
@@ -104,10 +154,10 @@ export function loadConfig(): ResolvedConfig {
   } catch (e) {
     throw new Error(`config.json: invalid JSON: ${(e as Error).message}`);
   }
-  return resolveConfig(parsed as Config);
+  return resolveConfig(parsed as Config, opts);
 }
 
-export function resolveConfig(raw: Config): ResolvedConfig {
+export function resolveConfig(raw: Config, opts: ResolveOptions = {}): ResolvedConfig {
   validateV1Surface(raw);
 
   if (raw.security.hashAlgorithm && raw.security.hashAlgorithm !== 'rescue_prime') {
@@ -120,13 +170,34 @@ export function resolveConfig(raw: Config): ResolvedConfig {
   const tiers = mergeTiers(raw.tiers);
   const predicates = resolvePredicates(raw);
   const instances = resolveInstances(raw, tiers);
-  const lists = resolveLists(raw, instances);
 
   const masterKeyEnv = raw.security.masterKeyEnv || 'TRUSSET_KYC_MASTER_KEY';
   const signingKeyEnv = raw.manifest?.signingKeyEnv || 'TRUSSET_KYC_SIGNING_KEY';
-  const epochDaysSource: EpochDaysSource =
-    raw.security.epochDaysSource ?? 'utc_today';
+  const epochDaysSource: EpochDaysSource = raw.security.epochDaysSource ?? 'utc_today';
   const deterministic = raw.security.deterministic ?? true;
+
+  const manifestVersion = raw.manifest?.version ?? DEFAULT_MANIFEST_VERSION;
+  if (!SUPPORTED_MANIFEST_VERSIONS.includes(manifestVersion)) {
+    throw new Error(
+      `manifest.version: "${manifestVersion}" is not a version this build emits.\n  Fix: use one of ${SUPPORTED_MANIFEST_VERSIONS.join(', ')}, or remove the field to emit ${DEFAULT_MANIFEST_VERSION}.`,
+    );
+  }
+
+  const { epochDays, unpinnedEpoch } = resolveEpochDays(epochDaysSource, opts);
+
+  const issuer = raw.manifest?.issuer;
+  if (manifestVersion === '3.0.0') {
+    if (!issuer) {
+      throw new Error(
+        'manifest.issuer: missing.\n  A version 3.0.0 bundle records the party legally responsible for its assertions; without it the bundle says what was proved but not who stands behind it.\n  Fix: run `npm run init` to configure it, or set manifest.version to "2.1.0" to keep emitting the previous bundle shape.',
+      );
+    }
+    validateIssuer(issuer);
+  }
+
+  const registryDir = registryRoot(raw.security.registryDir);
+  const lists = resolveLists(raw, instances, registryDir, epochDays, manifestVersion);
+  const evidenceDateField = raw.mapping.evidenceDateField || 'evidenceDate';
 
   const configHashHex = canonicalConfigHash(raw);
 
@@ -141,7 +212,77 @@ export function resolveConfig(raw: Config): ResolvedConfig {
     epochDaysSource,
     deterministic,
     configHashHex,
+    manifestVersion,
+    issuer,
+    claims: raw.claims,
+    registryDir,
+    epochDays,
+    unpinnedEpoch,
+    evidenceDateField,
   };
+}
+
+/**
+ * Resolve the batch as-of date, refusing an unpinned wall-clock epoch unless
+ * the operator explicitly asked for one.
+ *
+ * `epochDays` is folded into every per-subject key, every commitment nonce,
+ * and every leaf hash. Under `utc_today` that number is whatever day the batch
+ * happened to run, so the bundle cannot be regenerated tomorrow — and
+ * regenerating it is exactly what an auditor asks for. The refusal is loud
+ * because the alternative is a bundle that looks like evidence and cannot be
+ * re-derived.
+ */
+export function resolveEpochDays(
+  source: EpochDaysSource,
+  opts: ResolveOptions = {},
+): { epochDays: number; unpinnedEpoch: boolean } {
+  if (source === 'utc_today') {
+    const today = todayEpochDays();
+    if (!opts.allowUnpinnedEpoch) {
+      throw new Error(
+        [
+          'security.epochDaysSource is "utc_today", which resolves to whatever day this batch happens to run.',
+          `  Today that is ${epochDaysToIsoDate(today)} (epoch day ${today}).`,
+          '  Every per-subject key, commitment nonce, and leaf hash derives from that number, so a bundle',
+          '  proved this way cannot be reproduced tomorrow and cannot satisfy an audit that asks you to.',
+          `  Fix: set "epochDaysSource": "fixed:${today}" in config.json to pin today as the batch as-of date,`,
+          '       or "env:TRUSSET_KYC_EPOCH_DAYS" to supply it per run.',
+          '  For development only, re-run with --dev-unpinned-epoch. Bundles built that way are stamped',
+          '  unpinnedEpoch in the manifest for the rest of their lives.',
+        ].join('\n'),
+      );
+    }
+    return { epochDays: today, unpinnedEpoch: true };
+  }
+  if (source.startsWith('fixed:')) {
+    const n = Number(source.slice('fixed:'.length));
+    if (!Number.isInteger(n) || n < 0) {
+      throw new Error(
+        `security.epochDaysSource: "${source}" is malformed.\n  Fix: use "fixed:<non-negative integer epoch day>", e.g. "fixed:${todayEpochDays()}" for today.`,
+      );
+    }
+    return { epochDays: n, unpinnedEpoch: false };
+  }
+  if (source.startsWith('env:')) {
+    const name = source.slice('env:'.length);
+    const v = process.env[name];
+    if (!v) {
+      throw new Error(
+        `security.epochDaysSource: "${source}" but the environment variable ${name} is unset.\n  Fix: export ${name}=${todayEpochDays()} for today, or pin "fixed:<n>" in config.json instead.`,
+      );
+    }
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 0) {
+      throw new Error(
+        `Environment variable ${name} is "${v}", which is not a non-negative integer epoch day.\n  Fix: export ${name}=${todayEpochDays()} for today.`,
+      );
+    }
+    return { epochDays: n, unpinnedEpoch: false };
+  }
+  throw new Error(
+    `security.epochDaysSource: "${source}" is not recognised.\n  Fix: use "fixed:<n>", "env:<VAR>", or "utc_today" (development only).`,
+  );
 }
 
 // ============================ validation ============================
@@ -338,8 +479,23 @@ function validatePredicate(field: string, p: PredicateSpec): void {
 
 // ============================ list loading ============================
 
-function resolveLists(c: Config, instances: ResolvedInstances): Record<string, ResolvedList> {
-  // Collect list IDs referenced by set_membership predicates.
+/**
+ * Resolve every list a `set_membership` predicate references.
+ *
+ * The signed registry is preferred over a bare list-commitments file, because
+ * it is the only source that also retains superseded versions. A proof carries
+ * its list's Merkle root; without a registry there is nothing that maps an old
+ * root back to the values it committed to, so a bundle from two rotations ago
+ * asserts membership in a set nobody can name. Falling back to a bare file is
+ * still allowed for v2 configs, with a warning.
+ */
+function resolveLists(
+  c: Config,
+  instances: ResolvedInstances,
+  registryDir: string,
+  epochDays: number,
+  manifestVersion: string,
+): Record<string, ResolvedList> {
   const referenced = new Set<string>();
   for (const inst of instances) {
     if (inst.spec.circuit === 'set_membership') {
@@ -348,42 +504,101 @@ function resolveLists(c: Config, instances: ResolvedInstances): Record<string, R
   }
   if (referenced.size === 0) return {};
 
-  if (!c.lists) {
-    throw new Error(
-      `config.lists is required when any set_membership predicate is configured. Referenced lists: ${[
-        ...referenced,
-      ].join(', ')}`,
-    );
-  }
-
   const out: Record<string, ResolvedList> = {};
   for (const listId of referenced) {
-    const entry = c.lists[listId];
+    const registry = loadListRegistry(registryDir, listId);
+    if (registry) {
+      out[listId] = resolveFromRegistry(registry, listId, registryDir, epochDays);
+      continue;
+    }
+
+    const entry: ListsEntry | undefined = c.lists?.[listId];
     if (!entry || !entry.path) {
-      throw new Error(`config.lists.${listId}.path is required`);
+      throw new Error(
+        [
+          `List "${listId}" is referenced by a set_membership predicate but has no source.`,
+          `  Looked for a signed registry at ${listRegistryFile(registryDir, listId)} and for config.lists.${listId}.path, and found neither.`,
+          `  Fix: record the list's first version with`,
+          `       npm run list-version -- --list-id ${listId} --source config/list_commitments/${listId}.source.txt`,
+        ].join('\n'),
+      );
     }
-    const resolvedPath = path.isAbsolute(entry.path)
-      ? entry.path
-      : path.join(process.cwd(), entry.path);
-    if (!fs.existsSync(resolvedPath)) {
-      throw new Error(`list_commitments file not found: ${resolvedPath}`);
+    if (manifestVersion === '3.0.0') {
+      console.warn(
+        [
+          `[config] list "${listId}" resolved from ${entry.path} rather than from the signed registry.`,
+          `         Superseded versions of a bare list file are not retained, so a proof made against an`,
+          `         earlier root cannot later be resolved back to the values it committed to.`,
+          `         Record it in the registry with:`,
+          `           npm run list-version -- --list-id ${listId} --source <the source .txt>`,
+        ].join('\n'),
+      );
     }
-    const bytes = fs.readFileSync(resolvedPath);
-    const parsed = parseListCommitmentFile(listId, bytes);
-    if (entry.sha256) {
-      const actual = '0x' + require('crypto').createHash('sha256').update(bytes).digest('hex');
-      const expected = entry.sha256.toLowerCase().startsWith('0x')
-        ? entry.sha256.toLowerCase()
-        : '0x' + entry.sha256.toLowerCase();
-      if (actual !== expected) {
-        throw new Error(
-          `list_commitments ${listId}: pinned SHA-256 mismatch (file changed). Expected ${expected}, got ${actual}.`,
-        );
-      }
-    }
-    out[listId] = { ...parsed, resolvedPath };
+    out[listId] = resolveFromFile(c, listId, entry);
   }
   return out;
+}
+
+function listRegistryFile(registryDir: string, listId: string): string {
+  return path.join(registryDir, 'lists', `${listId}.json`);
+}
+
+function resolveFromRegistry(
+  registry: ListRegistry,
+  listId: string,
+  registryDir: string,
+  epochDays: number,
+): ResolvedList {
+  const version = resolveListAt(registry, epochDays);
+  if (!version) {
+    const first = registry.versions[0];
+    throw new Error(
+      [
+        `List "${listId}" has no version authoritative on the batch as-of date ${epochDaysToIsoDate(epochDays)} (epoch day ${epochDays}).`,
+        `  Its earliest version became effective on ${epochDaysToIsoDate(first.effectiveFrom)} (epoch day ${first.effectiveFrom}).`,
+        `  Fix: pin a later security.epochDaysSource, or record a version covering this date with`,
+        `       npm run list-version -- --list-id ${listId} --source <file> --effective-date ${epochDaysToIsoDate(epochDays)}`,
+      ].join('\n'),
+    );
+  }
+  return {
+    listId,
+    values: version.values,
+    sourceSha256: version.sourceSha256,
+    root: version.root,
+    depth: version.depth,
+    resolvedPath: listRegistryFile(registryDir, listId),
+    version: version.version,
+    contentHash: version.contentHash,
+    effectiveFrom: version.effectiveFrom,
+    effectiveUntil: version.effectiveUntil,
+  };
+}
+
+function resolveFromFile(c: Config, listId: string, entry: ListsEntry): ResolvedList {
+  const resolvedPath = path.isAbsolute(entry.path!)
+    ? entry.path!
+    : path.join(process.cwd(), entry.path!);
+  if (!fs.existsSync(resolvedPath)) {
+    throw new Error(
+      `config.lists.${listId}.path points at ${resolvedPath}, which does not exist.\n  Fix: correct the path, or record the list in the registry with \`npm run list-version -- --list-id ${listId} --source <file>\`.`,
+    );
+  }
+  const bytes = fs.readFileSync(resolvedPath);
+  const parsed = parseListCommitmentFile(listId, bytes);
+  if (entry.sha256) {
+    const actual = '0x' + require('crypto').createHash('sha256').update(bytes).digest('hex');
+    const expected = entry.sha256.toLowerCase().startsWith('0x')
+      ? entry.sha256.toLowerCase()
+      : '0x' + entry.sha256.toLowerCase();
+    if (actual !== expected) {
+      throw new Error(
+        `config.lists.${listId}: pinned SHA-256 mismatch — ${resolvedPath} has changed since it was pinned.\n  Expected ${expected}\n  Found    ${actual}\n  Fix: if the change was intended, update config.lists.${listId}.sha256; otherwise restore the file.`,
+      );
+    }
+  }
+  const _unusedConfig = c;
+  return { ...parsed, resolvedPath, contentHash: listContentHash(parsed.values) };
 }
 
 interface ListFileShape {

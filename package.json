@@ -1,16 +1,21 @@
 {
   "name": "trusset-kyc-hashing",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "private": true,
   "description": "Per-leaf zk-STARK KYC hashing tool for Trusset tokenization infrastructure",
   "main": "cli/dist/index.js",
   "scripts": {
     "build": "bash scripts/build.sh",
+    "init": "bash scripts/build.sh && node cli/dist/index.js init",
     "start": "bash scripts/build.sh && node cli/dist/index.js hash",
     "hash": "bash scripts/build.sh && node cli/dist/index.js hash",
     "decrypt": "bash scripts/build.sh && node cli/dist/index.js decrypt",
     "verify": "bash scripts/build.sh && node cli/dist/index.js verify",
     "show": "bash scripts/build.sh && node cli/dist/index.js show",
+    "list-version": "bash scripts/build.sh && node cli/dist/index.js list-version",
+    "anchor": "bash scripts/build.sh && node cli/dist/index.js anchor",
+    "revoke": "bash scripts/build.sh && node cli/dist/index.js revoke",
+    "archive": "bash scripts/build.sh && node cli/dist/index.js archive",
     "postinstall": "bash scripts/build.sh"
   },
   "engines": {

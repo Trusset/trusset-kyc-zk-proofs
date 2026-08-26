@@ -1,5 +1,8 @@
 # Migrating from v1
 
+> Upgrading from v2? See [MIGRATION_V2_TO_V3.md](MIGRATION_V2_TO_V3.md). This
+> document covers the v1 to v2 path and the v2.0 to v2.1 changes.
+
 v2.0.0 is breaking on internals but preserves the v1 CLI surface and the
 batched index CSV consumed by the Trusset uploader. Tier-1 banks running
 v1 in production should be able to switch with config + env-var changes
@@ -121,7 +124,9 @@ npm start -- --skip-proofs
 Emits zero-byte `proofs/*.bin` files. The manifest's `mode` stays
 `"stub"`. Counterparty verifiers reject these bundles by default
 (strict mode); operators wanting to test against them must explicitly
-opt in via `--strict` toggled off (the verifier's default).
+opt in via `--accept-stub`. Since v3 this mode skips proving rather than
+proving and discarding the result, so it is also fast; predicates are
+still enforced.
 
 ## 10. Determinism guarantee
 

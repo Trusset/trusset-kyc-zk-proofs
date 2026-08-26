@@ -6,8 +6,24 @@
 import { ResolvedConfig, ResolvedList } from './config';
 import { ValidatedRecord } from './recordValidation';
 import { computeParamsHash, ageDaysFromParams } from './paramsHash';
-import { Disclosure, PredicateInstance, PredicateSpec } from './types';
+import { resolveDescriptor, resolveValidity } from './descriptors';
+import {
+  Disclosure,
+  IssuerConfig,
+  PredicateInstance,
+  PredicateSpec,
+  ResolvedDescriptor,
+  ResolvedValidity,
+} from './types';
 import * as path from 'path';
+
+/** Which version of which list a set_membership proof was made against. */
+export interface JobListVersionRef {
+  listId: string;
+  version: number;
+  root: string;
+  contentHash: string;
+}
 
 export interface JobLeaf {
   /** Leaf name. Equals the source field for single-instance predicates. */
@@ -19,6 +35,12 @@ export interface JobLeaf {
   disclosure: Disclosure;
   /** Resolved parameter values recorded in `manifest.leaves[].params`. */
   params: Record<string, unknown>;
+  /** v3: what legal test this predicate stands for and who warrants it. */
+  descriptor?: ResolvedDescriptor;
+  /** v3: how long the assertion holds. */
+  validity?: ResolvedValidity;
+  /** v3: the list version, for set_membership leaves. */
+  list_version?: JobListVersionRef;
 }
 
 export interface JobSubject {
@@ -33,6 +55,9 @@ export interface JobListCommitment {
   /** Root the committed file declares; the prover cross-checks it. */
   declared_root?: string;
   declared_depth?: number;
+  /** v3 registry version and content hash; both cross-checked by the prover. */
+  version?: number;
+  content_hash?: string;
 }
 
 export interface Job {
@@ -44,11 +69,27 @@ export interface Job {
   skip_proofs: boolean;
   subjects: JobSubject[];
   list_commitments: Record<string, JobListCommitment>;
+  /** v3: the expression that produced `epoch_days`, recorded in the manifest. */
+  epoch_days_source?: string;
+  /** v3: set when the operator opted into an unpinned wall-clock epoch. */
+  unpinned_epoch: boolean;
+  /** v3: the party legally responsible for the assertions. */
+  issuer?: IssuerConfig & { publicKey: string };
+  /** v3: validate everything and write nothing. */
+  dry_run: boolean;
 }
 
 export interface BuildJobOptions {
   skipProofs?: boolean;
   deterministic?: boolean;
+  /** Validate every leaf and write nothing. */
+  dryRun?: boolean;
+  /**
+   * The operator's ed25519 public key, hex. Recorded in the manifest's issuer
+   * block so a counterparty knows which key to obtain, and so an archived
+   * bundle carries the key its signature should check against.
+   */
+  publicKeyHex?: string;
 }
 
 /** A row that could not be turned into a subject, with the reason. */
@@ -103,19 +144,35 @@ export function buildJobWithSkips(
     }
   }
 
+  // The public key is only available once the signing key is loaded. A dry
+  // run does not need it — nothing is signed — so the issuer identity still
+  // travels, with the key left empty rather than the whole block dropped.
+  const issuer = rc.issuer
+    ? { ...rc.issuer, publicKey: opts.publicKeyHex ? normalizeHex(opts.publicKeyHex) : '' }
+    : undefined;
+
   return {
     job: {
-      version: '2.1.0',
+      version: rc.manifestVersion,
       deterministic: opts.deterministic ?? rc.deterministic,
-      epoch_days: resolveEpochDays(rc),
+      epoch_days: rc.epochDays,
       output_root: path.resolve(outputRoot),
       config_hash: rc.configHashHex,
       skip_proofs: !!opts.skipProofs,
       subjects,
       list_commitments: buildListCommitments(rc),
+      epoch_days_source: rc.epochDaysSource,
+      unpinned_epoch: rc.unpinnedEpoch,
+      issuer,
+      dry_run: !!opts.dryRun,
     },
     skipped,
   };
+}
+
+function normalizeHex(hex: string): string {
+  const stripped = hex.trim().replace(/^0x/i, '').toLowerCase();
+  return `0x${stripped}`;
 }
 
 function buildSubject(record: ValidatedRecord, rc: ResolvedConfig): JobSubject {
@@ -197,6 +254,41 @@ function buildLeaf(
       break;
   }
 
+  // v3 claim descriptor and validity. Emitted only when the run targets the
+  // 3.0.0 wire version, so a config still pinned to 2.1.0 keeps producing
+  // exactly the bundle shape it always did.
+  let descriptor: ResolvedDescriptor | undefined;
+  let validity: ResolvedValidity | undefined;
+  let listVersion: JobListVersionRef | undefined;
+  if (rc.manifestVersion === '3.0.0') {
+    descriptor = resolveDescriptor(leafName, predicate, rc.claims?.defaults, rc.issuer!);
+    validity = resolveValidity(
+      leafName,
+      predicate,
+      rc.claims?.defaults,
+      rc.epochDays,
+      record.evidenceDate,
+    );
+    if (predicate.circuit === 'set_membership') {
+      const list = rc.lists[predicate.params.list];
+      if (list?.version === undefined || list.contentHash === undefined) {
+        throw new Error(
+          [
+            `predicates.${leafName}: list "${predicate.params.list}" has no registry version, so this leaf could not record which version it was proved against.`,
+            `  Without that, a verifier holding the bundle years from now cannot resolve its setRoot back to the values it committed to.`,
+            `  Fix: npm run list-version -- --list-id ${predicate.params.list} --source <the source .txt>`,
+          ].join('\n'),
+        );
+      }
+      listVersion = {
+        listId: list.listId,
+        version: list.version,
+        root: list.root,
+        contentHash: list.contentHash,
+      };
+    }
+  }
+
   return {
     field: leafName,
     // `commitment_only` leaves carry no STARK, but they keep the
@@ -211,6 +303,9 @@ function buildLeaf(
     params_hash,
     disclosure: instance.disclosure,
     params,
+    ...(descriptor ? { descriptor } : {}),
+    ...(validity ? { validity } : {}),
+    ...(listVersion ? { list_version: listVersion } : {}),
   };
 }
 
@@ -239,34 +334,11 @@ function buildListCommitments(rc: ResolvedConfig): Record<string, JobListCommitm
       source_sha256: list.sourceSha256,
       declared_root: list.root,
       declared_depth: list.depth,
+      ...(list.version !== undefined ? { version: list.version } : {}),
+      ...(list.contentHash !== undefined ? { content_hash: list.contentHash } : {}),
     };
   }
   return out;
-}
-
-function resolveEpochDays(rc: ResolvedConfig): number {
-  const src = rc.epochDaysSource;
-  if (src === 'utc_today') {
-    return Math.floor(Date.now() / 86_400_000);
-  }
-  if (src.startsWith('fixed:')) {
-    const n = Number(src.slice('fixed:'.length));
-    if (!Number.isInteger(n) || n < 0) {
-      throw new Error(`epochDaysSource fixed:<n> requires a non-negative integer, got "${src}"`);
-    }
-    return n;
-  }
-  if (src.startsWith('env:')) {
-    const name = src.slice('env:'.length);
-    const v = process.env[name];
-    if (!v) throw new Error(`epochDaysSource env:${name} — env var unset`);
-    const n = Number(v);
-    if (!Number.isInteger(n) || n < 0) {
-      throw new Error(`env var ${name} must be a non-negative integer, got "${v}"`);
-    }
-    return n;
-  }
-  throw new Error(`unknown epochDaysSource: ${src}`);
 }
 
 // Re-export for tests/cli.

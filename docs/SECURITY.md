@@ -1,8 +1,15 @@
 # Security model
 
-This document describes what `trusset-kyc-hashing` v2 protects against,
-what it assumes, and how the cryptographic primitives compose. It is the
-primary reference for compliance reviewers and external auditors.
+This document describes what `trusset-kyc-hashing` v3 protects against, what
+it assumes, and how the cryptographic primitives compose. It is the primary
+reference for compliance reviewers and external auditors.
+
+v3 changed nothing inside the circuits. What it changed is what a bundle
+records about itself: who is responsible for its assertions, what legal test
+each predicate stands for, how long each claim is asserted, which version of
+which list a set-membership proof was made against, and how to ask what was
+true at a past moment rather than only what is true now. The sections marked
+below describe those additions and the v2 gaps that motivated them.
 
 ## Threat model
 
@@ -23,7 +30,14 @@ primary reference for compliance reviewers and external auditors.
 | Tampered proof or manifest after signing | ed25519 signature over the canonical-JSON view of the manifest; the verifier reconstructs and re-checks. Independently, the on-chain root anchors the same bytes |
 | Stub bundle relabeled as production | The `mode` field is inside the signing payload, so relabeling invalidates the signature. A production-mode bundle carrying an empty proof on a proving leaf is rejected outright |
 | Lost or stolen `secrets.enc` decryption attempt without the master key | XSalsa20-Poly1305 with an HKDF-derived wrapping key; the payload key itself is wrapped, so offline brute force requires the 256-bit master key |
-| Non-deterministic output (operator cannot reproduce a bundle to satisfy an audit) | Under `deterministic: true` all key material flows from `TRUSSET_KYC_MASTER_KEY` via HKDF, and `TRUSSET_KYC_DETERMINISTIC=1` makes any OS-entropy draw fail with `E_DETERMINISM_VIOLATION` |
+| Non-deterministic output (operator cannot reproduce a bundle to satisfy an audit) | Under `deterministic: true` all key material flows from `TRUSSET_KYC_MASTER_KEY` via HKDF, and `TRUSSET_KYC_DETERMINISTIC=1` makes any OS-entropy draw fail with `E_DETERMINISM_VIOLATION`. Since v3, `epochDaysSource: "utc_today"` is refused outside an explicit development flag: it is the other way a bundle becomes unreproducible, and it was the shipped default through v2.1 |
+| A bundle whose assertions nobody is accountable for | v3 manifests record `issuer`: the institution's name, identifier scheme and value, supervising jurisdiction, signing-key id, and public key |
+| A threshold with no stated meaning (`minTier: 2`) | Every v3 leaf carries a claim descriptor naming the legal basis, the warranting party, and the evidence class, hashed into the leaf and therefore into `kycHash` |
+| A list root whose contents nobody retained | The signed append-only list registry keeps every version that was ever authoritative, with its values; each leaf records the version it used |
+| A claim that stopped being true, or was never true | Separate signed revocation records distinguish `lapsed` from `void_ab_initio`. Neither edits the bundle, both are surfaced by the verifier |
+| Silent substitution of a compliance-relevant input | An `investorType` or expiry value that is present but unrecognised quarantines the row instead of taking the configured default. Through v2.1 a mistyped tier was silently recorded as the default and signed |
+| A witness value leaking through a failure report | Prover failure messages name the leaf and the asserted threshold, never the subject's value. `output/failures.csv` travels; through v2.1 it recorded lines like `value 'BRA' not in list` |
+| A manifest whose `proofPath` escapes the bundle directory | `proofPath` is the only manifest field that reaches the filesystem, and a manifest is untrusted input. Every read path — the verifier's loader, the archive builder, and the archive's own structure check — requires a plain `proofs/<name>` entry with no separators, parent references, or leading dot, so a hand-written manifest cannot make a verifier read outside the bundle |
 | Proof parameters silently weakened below the advertised level | `conjectured_security_bits()` is asserted against `STARK_SECURITY_BITS` at compile time and again at prover startup (`E_WEAK_PROOF_OPTIONS`) |
 
 ### Out of scope
@@ -87,6 +101,28 @@ manifest signature.
 | Secrets encryption | XSalsa20-Poly1305 (libsodium secretbox) | [`xsalsa20poly1305` 0.9](https://crates.io/crates/xsalsa20poly1305) | Bit-compatible with libsodium; auditors can decrypt with either toolchain |
 | Key derivation | HKDF-SHA256 | [`hkdf` 0.12](https://crates.io/crates/hkdf) + [`sha2` 0.10](https://crates.io/crates/sha2) | RFC 5869 |
 | Canonical UTF-8 | Unicode NFC | [`unicode-normalization` 0.1](https://crates.io/crates/unicode-normalization) | Prevents `"café"` composed vs decomposed producing different proofs |
+| Address checksums (TS) | keccak-256 | [`@noble/hashes` 1.x](https://www.npmjs.com/package/@noble/hashes) | Audited, zero-dependency. EIP-55 itself is fifteen lines in `cli/src/address.ts`, pinned against the vectors published in the EIP |
+
+### Dependency surface
+
+The CLI has three runtime dependencies: `@noble/hashes`, `commander`, and the
+two `csv-*` parsers. `npm audit` reports zero advisories.
+
+Through v3.0.0-rc this list also carried `ethers`, used for exactly two
+functions — `isAddress` and `getAddress`. It brought roughly twenty transitive
+packages including a WebSocket client and an ENS normalizer, and produced
+fifteen advisories, one of them high severity (`ws`, uninitialized memory
+disclosure). None was reachable — the tool opens no sockets — but a tool whose
+security model is "no outbound network calls, ever" has no business shipping a
+WebSocket library, and every downstream security review would have had to
+reason about it.
+
+The replacement was differential-tested against `ethers` over 20,012 inputs
+(random addresses in lowercase, uppercase, checksummed, and single-case-flipped
+forms, plus malformed input and the EIP-55 vectors) with zero divergence, and
+bundle output was confirmed byte-identical before and after the swap. That
+check matters because the 20-byte address is hashed into every leaf: a
+divergence would have changed every root the tool has ever produced.
 
 All nine 32-byte domain tags are pairwise distinct at compile time via
 `static_assertions::const_assert!`:
@@ -228,39 +264,180 @@ existing subjects must re-issue them under v2.1.
 
 ## Allowlist rotation
 
-An allowlist changes when a jurisdiction is added or a sanctions list
-updates. The procedure:
+An allowlist changes when a jurisdiction is added or a sanctions list updates.
 
-1. Edit `config/list_commitments/<id>.source.txt`. One entry per line,
-   `#` for comments.
-2. Regenerate the commitment:
+### What was wrong before v3
+
+`trusset-list-commit --output` wrote over the previous file. A
+`set_membership` proof records the Merkle root of the list it was proved
+against, so once a list had been rotated, nothing on disk mapped an old root
+back to the values it committed to. The bundles kept verifying — that part of
+this document was always accurate — but a reader holding one could establish
+only "member of the set with root `0x9078…`" and never what that set was.
+`config.json`, which named the list files, is `.gitignore`d, so the
+configuration that produced a bundle was not retained either.
+
+`paramsHash` does not distinguish versions: `set::Params::hash()` covers the
+`listId` string alone, so it is identical across every version a list has ever
+had. The distinguishing value has always been `setRoot`, which is bound into
+`publicDigest`, the leaf hash, and `kycHash`.
+
+### The procedure now
+
+1. Edit `config/list_commitments/<id>.source.txt`. One entry per line, `#` for
+   comments.
+2. Record a new authoritative version:
 
 ```bash
-cargo run --release -p trusset-list-commit -- \
+npm run list-version -- \
   --list-id country_allowlist \
   --source config/list_commitments/country_allowlist.source.txt \
-  --output config/list_commitments/country_allowlist.json
+  --effective-date 2026-09-01 \
+  --note "Sanctions review 2026-Q3"
 ```
 
-3. The new file carries a new `root` and a new `sourceSha256`. If
-   `config.lists.<id>.sha256` is pinned, update it to the new file hash.
-   The prover independently recomputes the root from the values and
-   refuses to run if the file's declared root or depth disagrees, so a
-   forgotten regeneration fails loudly instead of being ignored.
-4. New bundles record the new root and `sourceSha256` in
-   `manifest.lists.<id>` and in each `set_membership` leaf's `params`.
-5. Update the counterparty's approved-root policy. For the Trusset issuer
-   backend that is `approvedLists.<id>` in `config/zkTrustAnchors.js`;
-   editing it changes `POLICY_VERSION`, which invalidates cached
-   verification verdicts (they re-verify, they do not fail).
+This appends to `config/registry/lists/country_allowlist.json` and signs it
+with the manifest signing key. The previous version's window closes on the day
+before the new one opens; its values, root, and content hash stay in the file
+forever. The writer refuses to remove or reorder a version, to record a version
+whose values are unchanged (two versions sharing a root could not be told apart
+by a proof), or to open one before the current version started.
 
-**Existing bundles keep verifying.** A bundle asserts membership in the
-list whose root it recorded, and that statement stays true. What a
-counterparty decides about an old root is policy, not cryptography: a
-verifier that only accepts the current root will reject bundles issued
-against the previous one, which is usually the intent for a sanctions
-update. Rotating a list does not invalidate `kycHash` and does not
-require re-proving unless the counterparty's policy demands the new root.
+3. New bundles resolve the version authoritative on the batch as-of date and
+   record it in each `set_membership` leaf's `binding.listVersion`, alongside
+   its root and content hash. The prover cross-checks both against its own
+   recomputation and refuses to proceed on a mismatch.
+4. Update the counterparty's approved-root policy. For the Trusset issuer
+   backend that is `approvedLists.<id>` in `config/zkTrustAnchors.js`; editing
+   it changes `POLICY_VERSION`, which invalidates cached verification verdicts
+   (they re-verify, they do not fail).
+
+**Existing bundles keep verifying, and now they also stay interpretable.** A
+verifier holding the registry — or an archive, which carries it — resolves an
+old proof's `setRoot` back to the version it used and the values that version
+contained:
+
+```
+list     country_allowlist v1 (resolved, 17 entries)
+```
+
+Verification resolves the version from the leaf, never from current config.
+Rotating a list does not invalidate `kycHash` and does not require re-proving.
+
+## Claim descriptors and what a leaf asserts
+
+Through v2.1 a leaf asserted a numeric threshold and nothing else. `minAgeDays:
+6570` recorded a day count; it did not record which legal test that count
+stands for, who warrants it, what the underlying value was checked against, or
+how long the assertion holds. Nothing in the repository named a regulatory
+framework — the tiers `NONE / RETAIL / PROFESSIONAL / ELIGIBLE_COUNTERPARTY`
+are the MiFID II client-categorisation set and were nowhere declared as such.
+
+Every v3 leaf carries:
+
+```
+binding.descriptor.legalBasis     framework, reference, assertion
+binding.descriptor.issuingParty   who warrants this specific claim
+binding.descriptor.evidenceClass  how the value was verified
+binding.validity                  from, until, basisAsOf
+binding.listVersion               which list version, for set_membership
+```
+
+hashed together into `bindingDigest = Rescue(LEAF-BIND ‖ canonical_json(binding))`
+and appended to the leaf-hash preimage. Changing a descriptor changes the leaf
+hash, the Merkle root, and the signature. A leaf carrying no binding block
+hashes over exactly the v2 preimage, which is what keeps existing bundles
+valid.
+
+The evidence classes are `SELF_ATTESTED`, `DOCUMENTARY`,
+`THIRD_PARTY_RELIANCE`, `AUTHORITATIVE_SOURCE`, `CRYPTOGRAPHIC`, and
+`PHYSICAL_PRESENCE`. They are a labelled taxonomy, not a scale: nothing
+compares two of them, and no predicate accepts an evidence-class threshold.
+`THIRD_PARTY_RELIANCE` in particular carries whatever assurance the
+relied-upon firm applied, which this tool cannot observe.
+
+### The tier ordering
+
+`tier_threshold` proves `tier ≥ min_tier` by constraining `tier - min_tier` to
+`{0,1,2}` inside the AIR. The ordering is therefore a property of the circuit,
+not configurable metadata, and v3 does not change it.
+
+It is sound for the predicate the circuit proves — a sophistication floor —
+and matches how the categories escalate in practice. Its limits, stated so a
+reviewer does not have to infer them: a per-se professional and a professional
+who opted up under Annex II §II.1 are both `2` here and carry materially
+different protections; elective ECP status is instrument- and
+service-specific rather than a global property of a client; and on a
+protection-owed axis the ordering inverts, since `RETAIL` carries the most.
+Record the per-se/elective distinction in `descriptor.legalBasis.reference`
+where it matters.
+
+`minTier: RETAIL` is vacuous over the provable domain: the circuit already
+refuses `NONE`, so "at least RETAIL" is true of every tier it can prove.
+
+## Validity, lapse, and voidance
+
+`softExpiryDays` and `hardExpiryDays` are passthrough integers. No circuit
+witnesses them, no verifier evaluates them, and nothing records what date they
+count from. They were never an expiry model and are retained only for the
+issuer backend that consumes them.
+
+The model is per-leaf validity intervals: `from`, optional `until`, and
+`basisAsOf` — the date the underlying evidence was examined, which is not the
+date the claim starts. The gap between them is the staleness a reviewer wants
+to see, so it is recorded rather than assumed to be zero.
+
+Ending a claim is a separate signed record in
+`config/registry/revocations.json`, never an edit to the bundle:
+
+| | `lapsed` | `void_ab_initio` |
+|---|---|---|
+| Means | The claim was true and stopped being true | The claim was never true |
+| Carries `effectiveFrom` | Required | Rejected — naming a date would imply it held before then |
+| Reliance before that date | Stands | In question |
+| Bundle still verifies | Yes | **Yes** |
+| `temporal.entitled` | False from the date on | False at every instant |
+
+A voided bundle keeps verifying deliberately. The proof is a true record of
+what the operator asserted; destroying it to express that the assertion was
+wrong would destroy the evidence of the misstatement.
+
+## As-of verification and the root history
+
+This tool has no chain access and v3 does not add any. `--root` has always been
+a hex string the caller supplies.
+
+An as-of query resolves against `config/registry/root_history.json`, a signed
+append-only record of which root was published, at which block height, at which
+block timestamp:
+
+```bash
+npm run anchor -- --bundle output/0xWALLET \
+  --chain-id 1 --block 8000100 --block-time 1787529600
+```
+
+`trusset-verifier-cli --as-of-block N --chain-id C` finds the latest anchor at
+or below that height and reports whether it is this bundle's root. An anchor is
+never rewritten: recording the same publication twice is a no-op, and recording
+a *different* root at the same height is refused.
+
+When nothing resolves — no history supplied, or nothing published at or before
+that height — entitlement is reported as **NO**, with a note distinguishing
+"unknown" from "false". An entitlement question is never answered YES from
+absent evidence.
+
+## Archives
+
+`npm run archive` writes one integrity-checked file containing the bundles, the
+list registries their proofs depend on including superseded versions, the root
+history, the revocation log, and the issuer identity. Its `digest` covers every
+field except its own `createdAt`, so two archives of the same content compare
+equal and any modification is refused at parse time.
+
+Verification from an archive needs the file and a verifier binary: no config,
+no registry, no output tree, no network, no chain. `secrets.enc` is excluded
+unless `--include-secrets` is passed, because an archive is usually handed to a
+counterparty and the witness blob is operator-private even though encrypted.
 
 ## Replay protection (spec §12.3 / §12.4)
 
@@ -335,6 +512,22 @@ Supplying both checks both. Supplying neither is a usage error (exit 64),
 not a silent pass: a bundle verified against no anchor proves only
 internal self-consistency, which an adversary who rewrote the whole bundle
 can also produce. `VerifyReport.anchor` records which was used.
+
+Through v2.1 the operator's ed25519 public key was never written anywhere: the
+README documented `--public-key <hex>` and no command emitted that hex, so the
+offline path could not be run by anyone who had not read the test suite. It is
+now printed by `npm run init` and `npm run show`, and recorded in
+`manifest.issuer.publicKey`. Recording it in the manifest does not make the
+signature self-authenticating — an adversary who rewrites the manifest rewrites
+that field too — but it tells a counterparty which key to obtain out of band,
+and the verifier reports when a caller-supplied key disagrees with the one the
+bundle names.
+
+`overall_pass` and `temporal.entitled` answer different questions and are kept
+apart on purpose. The first is cryptography. The second adds the root that was
+on chain at the queried instant, each leaf's validity window, and any
+revocation. Exit codes: 0 verified and entitled, 2 verification failed, 3
+verified but not entitled.
 
 ## `secrets.enc` and recovery
 

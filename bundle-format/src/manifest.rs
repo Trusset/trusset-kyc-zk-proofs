@@ -14,6 +14,7 @@
 //! 2. **Disk view** — `createdAt` = real ISO 8601 timestamp at write time.
 //!    Identical to the signing view in every other field.
 
+use crate::claims::{LeafBinding, PartyRef};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -21,16 +22,30 @@ use std::collections::BTreeMap;
 /// independent of wall-clock time (plan §"Determinism").
 pub const CREATED_AT_SENTINEL: &str = "1970-01-01T00:00:00Z";
 
-pub const MANIFEST_VERSION: &str = "2.1.0";
+pub const MANIFEST_VERSION: &str = "3.0.0";
 
 /// Prior manifest version still accepted on the verify path. Bundles
-/// produced by v2.0.0 tooling parse into the same struct (every v2.1
+/// produced by v2.0.0 tooling parse into the same struct (every later
 /// field is optional-with-omission) and re-serialize byte-identically,
-/// so their signatures stay valid under v2.1 verifiers.
+/// so their signatures stay valid under v3 verifiers.
 pub const MANIFEST_VERSION_V200: &str = "2.0.0";
 
+/// The v2.1.0 manifest version, likewise still accepted.
+pub const MANIFEST_VERSION_V210: &str = "2.1.0";
+
 /// Manifest versions the verify path accepts.
-pub const ACCEPTED_MANIFEST_VERSIONS: [&str; 2] = [MANIFEST_VERSION_V200, MANIFEST_VERSION];
+pub const ACCEPTED_MANIFEST_VERSIONS: [&str; 3] = [
+    MANIFEST_VERSION_V200,
+    MANIFEST_VERSION_V210,
+    MANIFEST_VERSION,
+];
+
+/// Job-spec versions the prover accepts on stdin.
+pub const ACCEPTED_JOB_VERSIONS: [&str; 3] = [
+    MANIFEST_VERSION_V200,
+    MANIFEST_VERSION_V210,
+    MANIFEST_VERSION,
+];
 
 /// Per-leaf disclosure classes (v2.1, optional field `disclosure`).
 /// `plaintext`: the field's value is also disclosed outside the zk layer
@@ -122,6 +137,55 @@ pub struct LeafEntry {
     pub disclosure: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
+    /// v3 claim descriptor, validity interval, and list-version reference.
+    /// Absent on v2 leaves, which is what keeps their leaf hashes unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<LeafBinding>,
+    /// `Rescue(LEAF_BIND_TAG ‖ canonical_json(binding))`, appended to the
+    /// leaf-hash preimage. Present exactly when `binding` is.
+    #[serde(
+        rename = "bindingDigest",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub binding_digest: Option<String>,
+}
+
+/// Which build produced a bundle, so a verifier years later knows what to
+/// rebuild. The tool ships no prebuilt binaries: `proverSha256` is the digest
+/// of the binary that actually ran, recorded so an archived bundle can be
+/// traced to a source revision rather than to "some version of the tool".
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ToolchainBlock {
+    #[serde(rename = "proverVersion")]
+    pub prover_version: String,
+    #[serde(rename = "proverSha256")]
+    pub prover_sha256: String,
+    #[serde(
+        rename = "sourceCommit",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub source_commit: Option<String>,
+}
+
+/// The party legally responsible for every assertion in the bundle, and the
+/// key that signs them.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct IssuerBlock {
+    #[serde(flatten)]
+    pub party: PartyRef,
+    /// The ed25519 verifying key, 0x + 64 hex. Recording it does not make the
+    /// signature self-authenticating — an adversary who rewrites the manifest
+    /// rewrites this too — but it means a counterparty knows which key to
+    /// obtain out of band, and an archived bundle carries the key its
+    /// signature should check against.
+    #[serde(rename = "publicKey")]
+    pub public_key: String,
+    /// Stable label for the key, so rotation is expressible without changing
+    /// the issuer's identity.
+    #[serde(rename = "keyId")]
+    pub key_id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -170,6 +234,64 @@ pub struct Manifest {
         skip_serializing_if = "Option::is_none"
     )]
     pub config_hash: Option<String>,
+    /// v3: the expression that produced `epochDays`, e.g. `fixed:20700` or
+    /// `env:TRUSSET_KYC_EPOCH_DAYS`. Records how the as-of date was chosen,
+    /// not just what it was.
+    #[serde(
+        rename = "epochDaysSource",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub epoch_days_source: Option<String>,
+    /// v3: `epochDays` rendered as `YYYY-MM-DD`. Redundant with `epochDays`
+    /// and derived from it at build time; present because auditors read dates.
+    #[serde(rename = "asOfDate", default, skip_serializing_if = "Option::is_none")]
+    pub as_of_date: Option<String>,
+    /// v3: true when the batch ran with an unpinned wall-clock epoch under an
+    /// explicit development flag. Such a bundle cannot be reproduced and is
+    /// not fit for evidentiary use; the verifier reports it.
+    #[serde(
+        rename = "unpinnedEpoch",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub unpinned_epoch: Option<bool>,
+    /// v3: the party legally responsible for the assertions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<IssuerBlock>,
+    /// v3: the build that produced this bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolchain: Option<ToolchainBlock>,
+}
+
+/// Whether a manifest's `proofPath` is safe to join onto a directory.
+///
+/// A manifest read from disk or out of an archive is untrusted input: it may
+/// have been written by anyone. `proofPath` is the one field that reaches the
+/// filesystem, so a value like `../../../etc/passwd` would turn a verifier
+/// into an arbitrary-file-read primitive — the contents only ever feed a
+/// digest comparison, but whether the read succeeds is observable, and the
+/// path appears in error messages.
+///
+/// The prover only ever writes `proofs/<leafName>.bin` with a leaf name the
+/// config layer already constrains, so this rejects nothing a real bundle
+/// contains. Enforced on the read side because that is where the input stops
+/// being ours.
+#[must_use]
+pub fn is_safe_proof_path(path: &str) -> bool {
+    let Some(name) = path.strip_prefix("proofs/") else {
+        return false;
+    };
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+    // No separators, no parent references, no absolute or drive-relative
+    // forms, no NUL. Leaf names come from `LEAF_NAME_SAFE` in the CLI, so the
+    // permitted set is exactly that plus the `.bin` suffix.
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '@' | '-'))
+        && !name.contains("..")
+        && !name.starts_with('.')
 }
 
 impl Manifest {
@@ -229,6 +351,11 @@ mod tests {
             secrets_kdf_version: SECRETS_KDF_VERSION,
             merkle_version: Some(crate::merkle::MERKLE_VERSION_V2),
             config_hash: None,
+            epoch_days_source: None,
+            as_of_date: None,
+            unpinned_epoch: None,
+            issuer: None,
+            toolchain: None,
         }
     }
 
@@ -292,10 +419,73 @@ mod tests {
     }
 
     #[test]
-    fn accepted_versions_cover_both_wire_versions() {
+    fn safe_proof_paths_accept_what_the_prover_writes() {
+        for name in [
+            "proofs/firstName.bin",
+            "proofs/dateOfBirth@7665d.bin",
+            "proofs/document_number.bin",
+            "proofs/a-b.bin",
+        ] {
+            assert!(is_safe_proof_path(name), "should accept {}", name);
+        }
+    }
+
+    #[test]
+    fn safe_proof_paths_reject_traversal_and_absolute_forms() {
+        for name in [
+            "../../../etc/passwd",
+            "proofs/../../../etc/passwd",
+            "proofs/../secrets.enc",
+            "proofs/sub/dir.bin",
+            "/etc/passwd",
+            "proofs//etc/passwd",
+            "secrets.enc",
+            "proofs/",
+            "",
+            "proofs/.hidden",
+            "proofs/a\0b.bin",
+            "proofs/a b.bin",
+            "C:\\proofs\\x.bin",
+        ] {
+            assert!(!is_safe_proof_path(name), "should reject {:?}", name);
+        }
+    }
+
+    #[test]
+    fn accepted_versions_cover_every_shipped_wire_version() {
         assert!(ACCEPTED_MANIFEST_VERSIONS.contains(&"2.0.0"));
         assert!(ACCEPTED_MANIFEST_VERSIONS.contains(&"2.1.0"));
-        assert_eq!(MANIFEST_VERSION, "2.1.0");
+        assert!(ACCEPTED_MANIFEST_VERSIONS.contains(&"3.0.0"));
+        assert_eq!(MANIFEST_VERSION, "3.0.0");
+    }
+
+    /// A v2 manifest must round-trip with none of the v3 keys appearing, or
+    /// every signature issued before v3 breaks under v3 tooling.
+    #[test]
+    fn absent_v3_fields_are_omitted_from_canonical_bytes() {
+        let mut m = sample_manifest();
+        m.version = MANIFEST_VERSION_V210.to_string();
+        let text = String::from_utf8(canonical_disk_bytes(&m).unwrap()).unwrap();
+        for key in [
+            "epochDaysSource",
+            "asOfDate",
+            "unpinnedEpoch",
+            "issuer",
+            "toolchain",
+            "binding",
+            "bindingDigest",
+        ] {
+            assert!(
+                !text.contains(key),
+                "v3 key {} leaked into a v2 manifest",
+                key
+            );
+        }
+        let parsed: Manifest = serde_json::from_slice(text.as_bytes()).unwrap();
+        assert_eq!(
+            canonical_signing_bytes(&m).unwrap(),
+            canonical_signing_bytes(&parsed).unwrap()
+        );
     }
 
     /// Wire-format constants for `manifest.mode`. These strings are

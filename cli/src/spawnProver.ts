@@ -19,6 +19,7 @@ export type ProverEvent =
   | { event: 'start'; subjects: number }
   | { event: 'subject_start'; subject_id: string }
   | { event: 'leaf_proved'; subject_id: string; field: string; proof_bytes: number; ms: number }
+  | { event: 'leaf_failed'; subject_id: string; field: string; error_code: string; message: string }
   | { event: 'subject_done'; subject_id: string; bundle_path: string }
   | { event: 'subject_failed'; subject_id: string; error_code: string; message: string }
   | { event: 'done'; ok: number; failed: number };
@@ -45,17 +46,27 @@ export async function runProver(
   opts: SpawnOptions = {},
 ): Promise<ProverInvocationResult> {
   // ---- Pre-flight env checks ----
+  // A dry run writes nothing and signs nothing, so it must not require key
+  // material: an operator should be able to check a batch before they have
+  // finished setting the tool up.
   const masterKey = process.env[rc.masterKeyEnv];
   const signingKey = process.env[rc.signingKeyEnv];
-  if (!masterKey) {
-    throw new Error(
-      `env var ${rc.masterKeyEnv} is required (32-byte hex). Set it before running:\n  export ${rc.masterKeyEnv}=$(openssl rand -hex 32)`,
-    );
-  }
-  if (!signingKey) {
-    throw new Error(
-      `env var ${rc.signingKeyEnv} is required (32-byte hex). Set it before running:\n  export ${rc.signingKeyEnv}=$(openssl rand -hex 32)`,
-    );
+  if (!job.dry_run) {
+    for (const [name, value] of [
+      [rc.masterKeyEnv, masterKey],
+      [rc.signingKeyEnv, signingKey],
+    ] as const) {
+      if (!value) {
+        throw new Error(
+          [
+            `Environment variable ${name} is not set; it holds 32 bytes of hex key material.`,
+            '  Fix: load the keys `npm run init` generated for you:',
+            '    set -a && . ./.trusset/keys.env && set +a',
+            '  If you have not run init yet:  npm run init',
+          ].join('\n'),
+        );
+      }
+    }
   }
 
   const binary = opts.proverPath ?? locateProver();
@@ -68,10 +79,10 @@ export async function runProver(
   // bundle that cannot be reproduced.
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
-    TRUSSET_KYC_MASTER_KEY: masterKey,
-    TRUSSET_KYC_SIGNING_KEY: signingKey,
     RUST_BACKTRACE: '0',
   };
+  if (masterKey) childEnv.TRUSSET_KYC_MASTER_KEY = masterKey;
+  if (signingKey) childEnv.TRUSSET_KYC_SIGNING_KEY = signingKey;
   if (job.deterministic) {
     childEnv.TRUSSET_KYC_DETERMINISTIC = '1';
   } else {
@@ -167,4 +178,24 @@ export function locateProver(): string {
 
   // 3. Fall back to PATH lookup.
   return 'trusset-prover';
+}
+
+/**
+ * Locate any workspace binary, with the same walk-up strategy. Used by the
+ * commands that shell out to `trusset-registry` and `trusset-archive`.
+ */
+export function locateBinary(name: string): string {
+  const envName = `TRUSSET_${name.replace(/-/g, '_').toUpperCase()}`;
+  if (process.env[envName]) return process.env[envName] as string;
+  let dir = process.cwd();
+  for (let i = 0; i < 5; i++) {
+    for (const profile of ['release', 'debug']) {
+      const candidate = path.join(dir, 'target', profile, name);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return name;
 }

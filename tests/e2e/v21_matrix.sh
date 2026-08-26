@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Trusset KYC hashing - v2.1.0 end-to-end matrix.
 #
+# This suite pins the v2.1 wire behaviour and keeps running under v3 tooling.
+# Each case therefore forces `manifest.version` back to 2.1.0 and `minTier`
+# back to RETAIL: the point is to prove the previous bundle shape still comes
+# out unchanged, not to exercise v3's policy choices. The v3 flow is covered by
+# tests/e2e/v3_matrix.sh.
+#
 # Eight scenarios, each from a clean input/ and output/:
 #   1. JSON input, single subject, all fields, default config
 #   2. CSV input with a BOM, multiple subjects
@@ -59,8 +65,23 @@ new_case() {
     rm -rf "$dir"
     mkdir -p "$dir/input" "$dir/output"
     cp -r "$REPO_ROOT/config" "$dir/config"
-    jq "$jq_filter | .security.epochDaysSource = \"env:TRUSSET_KYC_EPOCH_DAYS\"" \
+    # The minTier override is conditional: several cases drop investorType
+    # from `predicates` entirely, and an unconditional assignment would
+    # recreate it and fail config validation with an orphan predicate.
+    jq "$jq_filter \
+        | .security.epochDaysSource = \"env:TRUSSET_KYC_EPOCH_DAYS\" \
+        | .manifest.version = \"2.1.0\" \
+        | (if .predicates.investorType \
+             then .predicates.investorType.params.minTier = \"RETAIL\" \
+             else . end)" \
         "$REPO_ROOT/config.example.json" > "$dir/config.json"
+    # v3 resolves allowlists from the signed registry. Record version 1 from
+    # the shipped source so a 2.1.0-shaped run has a list to resolve.
+    (cd "$dir" && "$REPO_ROOT/target/release/trusset-registry" list-version \
+        --list-id country_allowlist \
+        --source config/list_commitments/country_allowlist.source.txt \
+        --effective-date "$TRUSSET_KYC_EPOCH_DAYS" \
+        --registry config/registry >/dev/null 2>&1)
     echo "$dir"
 }
 

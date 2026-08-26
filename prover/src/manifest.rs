@@ -6,12 +6,13 @@
 //! module owns only the `build_manifest` glue that constructs a `Manifest`
 //! from prover-internal types (`ProvedLeaf`, `JobSubject`).
 
+use crate::dates::epoch_days_to_iso_date;
 use crate::dispatch::ProvedLeaf;
-use crate::job::{JobSubject, ListCommitment};
+use crate::job::{Job, JobSubject, ListCommitment};
 use std::collections::BTreeMap;
 use trusset_bundle_format::manifest::{
-    LeafEntry, ListEntry, Manifest, StarkBlock, CREATED_AT_SENTINEL, MANIFEST_VERSION,
-    MODE_PRODUCTION, MODE_STUB, SECRETS_KDF_VERSION,
+    LeafEntry, ListEntry, Manifest, StarkBlock, ToolchainBlock, CREATED_AT_SENTINEL,
+    MANIFEST_VERSION, MODE_PRODUCTION, MODE_STUB, SECRETS_KDF_VERSION,
 };
 use trusset_bundle_format::merkle::MERKLE_VERSION_V2;
 use trusset_circuits_common::{digest_to_hex, CIRCUITS_VERSION};
@@ -23,6 +24,7 @@ pub use trusset_bundle_format::manifest::{
 
 #[allow(clippy::too_many_arguments)]
 pub fn build_manifest(
+    job: &Job,
     subject: &JobSubject,
     epoch_days: u64,
     deterministic: bool,
@@ -33,6 +35,7 @@ pub fn build_manifest(
     list_roots: &BTreeMap<String, String>,
     skip_proofs: bool,
     config_hash_hex: &str,
+    toolchain: Option<ToolchainBlock>,
 ) -> Manifest {
     let mut leaves = Vec::with_capacity(proved_leaves.len());
     for &orig_idx in sorted_indices {
@@ -50,6 +53,8 @@ pub fn build_manifest(
             leaf_hash: digest_to_hex(&p.leaf_hash),
             disclosure: Some(p.disclosure.clone()),
             params: Some(p.manifest_params.clone()),
+            binding: p.binding.clone(),
+            binding_digest: p.binding_digest.as_ref().map(digest_to_hex),
         });
     }
 
@@ -82,8 +87,14 @@ pub fn build_manifest(
         MODE_PRODUCTION.to_string()
     };
 
+    // A v3 manifest is emitted only when the job asked for one. A job that
+    // still declares 2.0.0 or 2.1.0 produces exactly the manifest that
+    // version always produced, so an operator can upgrade the tool without
+    // their bundle shape changing under them.
+    let emitting_v3 = job.version == MANIFEST_VERSION;
+
     Manifest {
-        version: MANIFEST_VERSION.to_string(),
+        version: job.version.clone(),
         mode,
         wallet_address: subject.subject_id.clone(),
         kyc_hash: kyc_hash_hex.to_string(),
@@ -98,5 +109,30 @@ pub fn build_manifest(
         secrets_kdf_version: SECRETS_KDF_VERSION,
         merkle_version: Some(MERKLE_VERSION_V2),
         config_hash: Some(config_hash_hex.to_string()),
+        epoch_days_source: if emitting_v3 {
+            job.epoch_days_source.clone()
+        } else {
+            None
+        },
+        as_of_date: if emitting_v3 {
+            Some(epoch_days_to_iso_date(epoch_days))
+        } else {
+            None
+        },
+        // Recorded only when true. A bundle that says nothing about pinning
+        // was produced by tooling that had no concept of it; a bundle that
+        // says `false` is claiming something, and the two should not look
+        // the same to a reader.
+        unpinned_epoch: if emitting_v3 && job.unpinned_epoch {
+            Some(true)
+        } else {
+            None
+        },
+        issuer: if emitting_v3 {
+            job.issuer.clone()
+        } else {
+            None
+        },
+        toolchain: if emitting_v3 { toolchain } else { None },
     }
 }

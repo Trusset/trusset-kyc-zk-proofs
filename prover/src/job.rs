@@ -3,6 +3,8 @@
 use crate::errors::{ErrorCode, ProverError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use trusset_bundle_format::claims::{ClaimDescriptor, ListVersionRef, ValidityInterval};
+use trusset_bundle_format::manifest::IssuerBlock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -27,10 +29,50 @@ pub struct Job {
     pub subjects: Vec<JobSubject>,
     #[serde(default)]
     pub list_commitments: BTreeMap<String, ListCommitment>,
+    /// v3: the expression that produced `epoch_days`, recorded verbatim in the
+    /// manifest so a reader knows how the as-of date was chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch_days_source: Option<String>,
+    /// v3: set when the operator ran with an unpinned wall-clock epoch behind
+    /// the development flag. Stamped into the manifest so such a bundle is
+    /// identifiable as non-reproducible for the rest of its life.
+    #[serde(default)]
+    pub unpinned_epoch: bool,
+    /// v3: the party legally responsible for the assertions. Required for
+    /// manifest version 3.0.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<IssuerBlock>,
+    /// v3: validate every leaf of every subject and report all failures
+    /// without writing any bundle.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 fn default_deterministic() -> bool {
     true
+}
+
+/// A `Job` with every optional field at its wire default. Exists so callers
+/// constructing a job in code — tests, and the archive round-trip harness —
+/// name only the fields they care about, and so adding a field to the wire
+/// schema does not mechanically break every construction site.
+impl Default for Job {
+    fn default() -> Self {
+        Self {
+            version: trusset_bundle_format::manifest::MANIFEST_VERSION.to_string(),
+            deterministic: true,
+            epoch_days: 0,
+            output_root: String::new(),
+            config_hash: String::new(),
+            skip_proofs: false,
+            subjects: Vec::new(),
+            list_commitments: BTreeMap::new(),
+            epoch_days_source: None,
+            unpinned_epoch: false,
+            issuer: None,
+            dry_run: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,7 +85,7 @@ pub struct JobSubject {
     pub leaves: Vec<JobLeaf>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct JobLeaf {
     pub field: String,
     pub circuit: String,
@@ -66,9 +108,21 @@ pub struct JobLeaf {
     /// from `public` / the circuit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
+    /// v3 claim descriptor: legal basis, warranting party, evidence class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<ClaimDescriptor>,
+    /// v3 validity interval for this leaf's assertion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validity: Option<ValidityInterval>,
+    /// v3 list-version reference, for `set_membership` leaves. The prover
+    /// cross-checks `root` against its own recomputation from the values it
+    /// was given, so a descriptor pointing at the wrong version fails the run
+    /// rather than being recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_version: Option<ListVersionRef>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ListCommitment {
     /// Raw allowlist values, NFC-normalized strings. The prover recomputes
     /// the Rescue Merkle root from these.
@@ -85,6 +139,12 @@ pub struct ListCommitment {
     /// Depth declared by the same file, cross-checked alongside the root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared_depth: Option<u8>,
+    /// v3 registry version this list resolved to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    /// v3 SHA-256 over the canonical values, cross-checked by the prover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
 }
 
 impl Job {
@@ -95,13 +155,28 @@ impl Job {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if !trusset_bundle_format::manifest::ACCEPTED_MANIFEST_VERSIONS
-            .contains(&self.version.as_str())
+        if !trusset_bundle_format::manifest::ACCEPTED_JOB_VERSIONS.contains(&self.version.as_str())
         {
             return Err(ProverError::input(format!(
-                "unsupported job version: {} (expected 2.0.0 or 2.1.0)",
-                self.version
+                "unsupported job version: {} (this build accepts {})",
+                self.version,
+                trusset_bundle_format::manifest::ACCEPTED_JOB_VERSIONS.join(", ")
             )));
+        }
+        // A dry run writes no manifest, so it has nothing to record an issuer
+        // into. Requiring one here would make the check an operator runs
+        // before they have finished configuring depend on the configuration
+        // being finished.
+        if self.version == trusset_bundle_format::manifest::MANIFEST_VERSION
+            && self.issuer.is_none()
+            && !self.dry_run
+        {
+            return Err(ProverError::new(
+                ErrorCode::IssuerMissing,
+                "a version 3.0.0 job requires an issuer block: the bundle records who is legally \
+                 responsible for its assertions. Run `npm run init` to configure `manifest.issuer` \
+                 in config.json.",
+            ));
         }
         if self.subjects.is_empty() {
             return Err(ProverError::input("job has no subjects"));
@@ -327,6 +402,10 @@ mod tests {
             output_root: "/tmp/out".to_string(),
             config_hash: "0x".to_string() + &"a".repeat(64),
             skip_proofs: false,
+            epoch_days_source: Some("fixed:20587".to_string()),
+            unpinned_epoch: false,
+            issuer: None,
+            dry_run: false,
             subjects: vec![JobSubject {
                 subject_id: "0x0000000000000000000000000000000000000001".to_string(),
                 passthrough: serde_json::json!({"k": "v"}),
@@ -338,6 +417,9 @@ mod tests {
                     params_hash: "0x".to_string() + &"c".repeat(64),
                     disclosure: None,
                     params: None,
+                    descriptor: None,
+                    validity: None,
+                    list_version: None,
                 }],
             }],
             list_commitments: BTreeMap::from([(
@@ -347,6 +429,8 @@ mod tests {
                     source_sha256: "0x".to_string() + &"d".repeat(64),
                     declared_root: None,
                     declared_depth: None,
+                    version: None,
+                    content_hash: None,
                 },
             )]),
         };
@@ -363,6 +447,12 @@ mod tests {
             "skip_proofs",
             "subjects",
             "list_commitments",
+            // v3. `epoch_days_source` and `dry_run`/`unpinned_epoch` are
+            // always present on the wire; `issuer` is optional-with-omission
+            // and absent here.
+            "epoch_days_source",
+            "unpinned_epoch",
+            "dry_run",
         ];
         for name in &expected_job_fields {
             assert!(

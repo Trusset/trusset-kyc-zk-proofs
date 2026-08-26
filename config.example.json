@@ -13,18 +13,173 @@
     "countryField": "country",
     "investorTypeField": "investorType",
     "softExpiryDaysField": "softExpiryDays",
-    "hardExpiryDaysField": "hardExpiryDays"
+    "hardExpiryDaysField": "hardExpiryDays",
+    "evidenceDateField": "evidenceDate"
+  },
+  "claims": {
+    "defaults": {
+      "issuingParty": "self",
+      "evidenceClass": "DOCUMENTARY",
+      "validity": {
+        "days": 365,
+        "basisAsOfOffsetDays": 0
+      }
+    }
   },
   "predicates": {
-    "dateOfBirth":            { "circuit": "age_threshold",       "params": { "minAgeYears": 18 } },
-    "country":                { "circuit": "set_membership",      "params": { "list": "country_allowlist" } },
-    "nationality":            { "circuit": "set_membership",      "params": { "list": "country_allowlist" } },
-    "documentIssuingCountry": { "circuit": "set_membership",      "params": { "list": "country_allowlist" } },
-    "investorType":           { "circuit": "tier_threshold",      "params": { "minTier": "RETAIL" } },
-    "firstName":              { "circuit": "commitment_only",     "params": { "maxValueBytes": 128 } },
-    "lastName":               { "circuit": "commitment_only",     "params": { "maxValueBytes": 128 } },
-    "documentType":           { "circuit": "commitment_only",     "params": { "maxValueBytes": 64  } },
-    "documentNumber":         { "circuit": "commitment_only",     "params": { "maxValueBytes": 64  } }
+    "dateOfBirth": {
+      "circuit": "age_threshold",
+      "params": {
+        "minAgeYears": 18
+      },
+      "descriptor": {
+        "legalBasis": {
+          "framework": "NATIONAL",
+          "reference": "contractual capacity — age of majority",
+          "assertion": "Subject is at or above the age of majority"
+        },
+        "evidenceClass": "DOCUMENTARY"
+      },
+      "validity": {
+        "days": 3650
+      }
+    },
+    "country": {
+      "circuit": "set_membership",
+      "params": {
+        "list": "country_allowlist"
+      },
+      "descriptor": {
+        "legalBasis": {
+          "framework": "AMLD5",
+          "reference": "Art. 9 — high-risk third countries",
+          "assertion": "Subject residence is in a jurisdiction on the approved list"
+        },
+        "evidenceClass": "DOCUMENTARY"
+      },
+      "validity": {
+        "days": 365
+      }
+    },
+    "nationality": {
+      "circuit": "set_membership",
+      "params": {
+        "list": "country_allowlist"
+      },
+      "descriptor": {
+        "legalBasis": {
+          "framework": "AMLD5",
+          "reference": "Art. 13(1)(a) — customer identification",
+          "assertion": "Subject nationality is in a jurisdiction on the approved list"
+        },
+        "evidenceClass": "DOCUMENTARY"
+      },
+      "validity": {
+        "days": 365
+      }
+    },
+    "documentIssuingCountry": {
+      "circuit": "set_membership",
+      "params": {
+        "list": "country_allowlist"
+      },
+      "descriptor": {
+        "legalBasis": {
+          "framework": "AMLD5",
+          "reference": "Art. 13(1)(a) — customer identification",
+          "assertion": "Identity document was issued by a jurisdiction on the approved list"
+        },
+        "evidenceClass": "DOCUMENTARY"
+      },
+      "validity": {
+        "days": 365
+      }
+    },
+    "investorType": {
+      "circuit": "tier_threshold",
+      "params": {
+        "minTier": "PROFESSIONAL"
+      },
+      "descriptor": {
+        "legalBasis": {
+          "framework": "MiFID_II",
+          "reference": "Annex II Section I — professional clients",
+          "assertion": "Subject is categorised at or above professional client"
+        },
+        "evidenceClass": "DOCUMENTARY"
+      },
+      "validity": {
+        "days": 730
+      }
+    },
+    "firstName": {
+      "circuit": "commitment_only",
+      "params": {
+        "maxValueBytes": 128
+      },
+      "descriptor": {
+        "legalBasis": {
+          "framework": "AMLD5",
+          "reference": "Art. 13(1)(a) — customer identification",
+          "assertion": "Subject given name as recorded at onboarding"
+        },
+        "evidenceClass": "DOCUMENTARY"
+      },
+      "validity": {
+        "days": 365
+      }
+    },
+    "lastName": {
+      "circuit": "commitment_only",
+      "params": {
+        "maxValueBytes": 128
+      },
+      "descriptor": {
+        "legalBasis": {
+          "framework": "AMLD5",
+          "reference": "Art. 13(1)(a) — customer identification",
+          "assertion": "Subject family name as recorded at onboarding"
+        },
+        "evidenceClass": "DOCUMENTARY"
+      },
+      "validity": {
+        "days": 365
+      }
+    },
+    "documentType": {
+      "circuit": "commitment_only",
+      "params": {
+        "maxValueBytes": 64
+      },
+      "descriptor": {
+        "legalBasis": {
+          "framework": "AMLD5",
+          "reference": "Art. 13(1)(a) — customer identification",
+          "assertion": "Class of identity document examined"
+        },
+        "evidenceClass": "DOCUMENTARY"
+      },
+      "validity": {
+        "days": 365
+      }
+    },
+    "documentNumber": {
+      "circuit": "commitment_only",
+      "params": {
+        "maxValueBytes": 64
+      },
+      "descriptor": {
+        "legalBasis": {
+          "framework": "AMLD5",
+          "reference": "Art. 13(1)(a) — customer identification",
+          "assertion": "Identifier of the identity document examined"
+        },
+        "evidenceClass": "DOCUMENTARY"
+      },
+      "validity": {
+        "days": 365
+      }
+    }
   },
   "tiers": {
     "NONE": 0,
@@ -33,9 +188,7 @@
     "ELIGIBLE_COUNTERPARTY": 3
   },
   "lists": {
-    "country_allowlist": {
-      "path": "config/list_commitments/country_allowlist.json"
-    }
+    "country_allowlist": {}
   },
   "output": {
     "format": "csv",
@@ -50,12 +203,20 @@
   },
   "security": {
     "clearInputAfterProcessing": true,
-    "hashAlgorithm": "rescue_prime",
     "masterKeyEnv": "TRUSSET_KYC_MASTER_KEY",
-    "epochDaysSource": "utc_today",
-    "deterministic": true
+    "epochDaysSource": "fixed:20689",
+    "deterministic": true,
+    "registryDir": "config/registry"
   },
   "manifest": {
-    "signingKeyEnv": "TRUSSET_KYC_SIGNING_KEY"
+    "signingKeyEnv": "TRUSSET_KYC_SIGNING_KEY",
+    "version": "3.0.0",
+    "issuer": {
+      "name": "Example Bank AG",
+      "identifierScheme": "LEI",
+      "identifier": "529900T8BM49AURSDO55",
+      "jurisdiction": "DE",
+      "keyId": "issuing-2026-08"
+    }
   }
 }

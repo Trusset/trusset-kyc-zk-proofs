@@ -7,7 +7,7 @@ external auditor (Softstack / equivalent) or BaFin compliance review.
 
 ## Status disclosure
 
-The repository is at **v2.1.0** - production ready. Each of the four
+The repository is at **v3.0.0** - production ready. Each of the four
 circuits ships a typed witness / predicate-validation / commitment /
 proof-API layer plus a real Winterfell STARK proof. The workspace default
 features are `prod-proofs-*`; `manifest.mode` defaults to `"production"`;
@@ -47,7 +47,7 @@ testing, not production.
 
 | | |
 |---|---|
-| **Implementation** | [`circuits/common/src/domain.rs`](../circuits/common/src/domain.rs). Seven 32-byte ASCII tags (`LEAF`, `NODE`, `PUB-DIGEST`, `PRF-DIGEST`, `SET-LEAF`, `SET-NODE`, `COMMIT`). C(7,2) = 21 `const_assert!` pairs |
+| **Implementation** | [`circuits/common/src/domain.rs`](../circuits/common/src/domain.rs). Ten 32-byte ASCII tags (`LEAF`, `NODE`, `PUB-DIGEST`, `PRF-DIGEST`, `SET-LEAF`, `SET-NODE`, `COMMIT`, `MERKLE-PAD`, `MERKLE-ROOT`, `LEAF-BIND`). C(10,2) = 45 `const_assert!` pairs |
 | **Audit check** | `cargo test -p trusset-circuits-common domain::tests` - runtime pairwise-distinct + prefix invariant |
 | **Status** | ✓ |
 

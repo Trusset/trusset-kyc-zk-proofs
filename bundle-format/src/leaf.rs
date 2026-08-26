@@ -12,8 +12,16 @@
 //!                   ‖ commitment_be32
 //!                   ‖ public_digest_be32
 //!                   ‖ proof_digest_be32
+//!                   [‖ binding_digest_be32]     v3 only, when the leaf
+//!                                               carries a binding block
 //!                 )
 //! ```
+//!
+//! The binding digest is appended only when present. A v2 leaf hashes over
+//! exactly the bytes it always did, so bundles issued before v3 keep their
+//! leaf hashes, their `kycHash`, and their manifest signature. Whether a
+//! given leaf has a binding block is read from the manifest, so there is no
+//! ambiguity about which preimage a verifier should reconstruct.
 
 use trusset_circuits_common::{
     digest_to_bytes, hash_bytes_with_tag, write_canonical_bytes, write_canonical_u64, CircuitId,
@@ -25,7 +33,7 @@ pub fn compute_proof_digest(proof_bytes: &[u8]) -> Digest {
     hash_bytes_with_tag(&PROOF_DIGEST_TAG, proof_bytes)
 }
 
-/// Compute the per-leaf hash sealed into the Merkle tree.
+/// Compute the per-leaf hash sealed into the Merkle tree (v2 preimage).
 pub fn compute_leaf_hash(
     field_name: &str,
     circuit_id: CircuitId,
@@ -35,8 +43,36 @@ pub fn compute_leaf_hash(
     public_digest: &Digest,
     proof_digest: &Digest,
 ) -> Digest {
-    let mut body =
-        Vec::with_capacity(4 + field_name.len() + 1 + 4 + wallet_bytes.len() + 8 + 32 + 32 + 32);
+    compute_leaf_hash_bound(
+        field_name,
+        circuit_id,
+        wallet_bytes,
+        epoch_days,
+        commitment,
+        public_digest,
+        proof_digest,
+        None,
+    )
+}
+
+/// Compute the per-leaf hash, optionally binding the v3 claim-descriptor /
+/// validity / list-version block. `binding = None` reproduces the v2 preimage
+/// byte for byte.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_leaf_hash_bound(
+    field_name: &str,
+    circuit_id: CircuitId,
+    wallet_bytes: &[u8],
+    epoch_days: u64,
+    commitment: &Digest,
+    public_digest: &Digest,
+    proof_digest: &Digest,
+    binding: Option<&Digest>,
+) -> Digest {
+    let extra = if binding.is_some() { 32 } else { 0 };
+    let mut body = Vec::with_capacity(
+        4 + field_name.len() + 1 + 4 + wallet_bytes.len() + 8 + 32 + 32 + 32 + extra,
+    );
     write_canonical_bytes(&mut body, field_name.as_bytes());
     body.push(circuit_id.as_u8());
     write_canonical_bytes(&mut body, wallet_bytes);
@@ -44,6 +80,9 @@ pub fn compute_leaf_hash(
     body.extend_from_slice(&digest_to_bytes(commitment));
     body.extend_from_slice(&digest_to_bytes(public_digest));
     body.extend_from_slice(&digest_to_bytes(proof_digest));
+    if let Some(b) = binding {
+        body.extend_from_slice(&digest_to_bytes(b));
+    }
     hash_bytes_with_tag(&LEAF_TAG, &body)
 }
 
@@ -163,6 +202,57 @@ mod tests {
             &d(99),
         );
         assert_ne!(base, v7);
+    }
+
+    #[test]
+    fn binding_changes_the_leaf_hash_and_absence_reproduces_v2() {
+        let unbound = compute_leaf_hash(
+            "firstName",
+            CircuitId::PreimageKnowledge,
+            &[1, 2, 3],
+            20587,
+            &d(1),
+            &d(2),
+            &d(3),
+        );
+        let explicit_none = compute_leaf_hash_bound(
+            "firstName",
+            CircuitId::PreimageKnowledge,
+            &[1, 2, 3],
+            20587,
+            &d(1),
+            &d(2),
+            &d(3),
+            None,
+        );
+        assert_eq!(
+            unbound, explicit_none,
+            "a leaf with no binding must hash exactly as it did under v2"
+        );
+
+        let bound = compute_leaf_hash_bound(
+            "firstName",
+            CircuitId::PreimageKnowledge,
+            &[1, 2, 3],
+            20587,
+            &d(1),
+            &d(2),
+            &d(3),
+            Some(&d(7)),
+        );
+        assert_ne!(unbound, bound);
+
+        let other = compute_leaf_hash_bound(
+            "firstName",
+            CircuitId::PreimageKnowledge,
+            &[1, 2, 3],
+            20587,
+            &d(1),
+            &d(2),
+            &d(3),
+            Some(&d(8)),
+        );
+        assert_ne!(bound, other, "the binding digest must be load-bearing");
     }
 
     #[test]

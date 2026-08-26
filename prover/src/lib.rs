@@ -7,6 +7,7 @@
 
 pub mod audit;
 pub mod bundle;
+pub mod dates;
 pub mod dispatch;
 pub mod encrypt;
 pub mod entropy;
@@ -16,5 +17,6 @@ pub mod job;
 pub mod leaf;
 pub mod manifest;
 pub mod merkle;
+pub mod registry_io;
 pub mod rekey;
 pub mod sign;

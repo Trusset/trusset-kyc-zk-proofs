@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Trusset KYC v2 — WASM runtime parity (Phase 2C Stage 30).
+# Trusset KYC — WASM runtime parity (Phase 2C Stage 30).
 #
 # Validates that the WASM verifier loaded into Node produces a
 # byte-identical VerifyReport JSON to the native `trusset-verifier-cli`
@@ -81,10 +81,19 @@ if command -v jq >/dev/null 2>&1; then
     jq '.security.epochDaysSource = "env:TRUSSET_KYC_EPOCH_DAYS"' \
         "$REPO_ROOT/config.example.json" > "$WORK/config.json"
 else
-    sed 's|"epochDaysSource": "utc_today"|"epochDaysSource": "env:TRUSSET_KYC_EPOCH_DAYS"|' \
+    sed 's|"epochDaysSource": "fixed:[0-9]*"|"epochDaysSource": "env:TRUSSET_KYC_EPOCH_DAYS"|' \
         "$REPO_ROOT/config.example.json" > "$WORK/config.json"
 fi
 cp -r "$REPO_ROOT/config" "$WORK/config"
+
+# v3: allowlists resolve from the signed append-only registry. Record version 1
+# from the shipped source so this run has one to resolve.
+(cd "$WORK" && "$REPO_ROOT/target/release/trusset-registry" list-version \
+    --list-id country_allowlist \
+    --source config/list_commitments/country_allowlist.source.txt \
+    --effective-date "$TRUSSET_KYC_EPOCH_DAYS" \
+    --registry config/registry >/dev/null) \
+    || fail "could not record list version 1"
 
 cat > "$WORK/input/parity.json" <<'EOF'
 [
@@ -107,8 +116,8 @@ export TRUSSET_PROVER_BIN="$PROVER_BIN"
 export TRUSSET_VERIFIER_BIN="$NATIVE_BIN"
 
 log "producing fresh production bundle"
-(cd "$WORK" && node "$REPO_ROOT/cli/dist/index.js" hash >/dev/null 2>&1) \
-    || fail "bundle generation failed"
+(cd "$WORK" && node "$REPO_ROOT/cli/dist/index.js" hash >"$WORK/hash.log" 2>&1) \
+    || { sed 's/^/    /' "$WORK/hash.log" >&2; fail "bundle generation failed"; }
 
 # Locate the single produced bundle directory under output/.
 BUNDLE_DIR="$(find "$WORK/output" -maxdepth 1 -type d -name "0x*" | head -1)"
@@ -119,7 +128,16 @@ log "bundle: $BUNDLE_DIR"
 
 log "native verifier"
 NATIVE_JSON="$WORK/native.json"
-"$NATIVE_BIN" --bundle "$BUNDLE_DIR" --public-key "$TEST_PUBLIC_KEY_HEX" --json \
+# Pin the evaluation instant to the bundle's own epochDays on both sides. The
+# native CLI defaults to the system clock; the WASM `verify_strict` export has
+# no clock and evaluates at the manifest's own date, which is its pre-v3
+# semantics. Both are correct for their callers, and this gate exists to catch
+# verification-logic drift rather than a disagreement about which day it is, so
+# both sides are asked the same question.
+BUNDLE_EPOCH_DAYS="$(sed -n 's/.*"epochDays": \([0-9]*\).*/\1/p' "$BUNDLE_DIR/manifest.json" | head -1)"
+[ -n "$BUNDLE_EPOCH_DAYS" ] || fail "could not read epochDays from the manifest"
+"$NATIVE_BIN" --bundle "$BUNDLE_DIR" --public-key "$TEST_PUBLIC_KEY_HEX" \
+    --as-of-date "$BUNDLE_EPOCH_DAYS" --now "$BUNDLE_EPOCH_DAYS" --json \
     > "$NATIVE_JSON" 2>/dev/null \
     || fail "native verifier failed"
 
@@ -206,7 +224,8 @@ with open(path, "wb") as f:
 PY
 
 NATIVE_TAMPER_JSON="$WORK/native_tamper.json"
-"$NATIVE_BIN" --bundle "$TAMPER_BUNDLE" --public-key "$TEST_PUBLIC_KEY_HEX" --json \
+"$NATIVE_BIN" --bundle "$TAMPER_BUNDLE" --public-key "$TEST_PUBLIC_KEY_HEX" \
+    --as-of-date "$BUNDLE_EPOCH_DAYS" --now "$BUNDLE_EPOCH_DAYS" --json \
     > "$NATIVE_TAMPER_JSON" 2>/dev/null || true   # exit nonzero on rejection is expected
 
 WASM_TAMPER_JSON="$WORK/wasm_tamper.json"

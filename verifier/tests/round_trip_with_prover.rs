@@ -72,6 +72,7 @@ fn fixture_job(out: &str) -> Job {
             params_hash: preimage_params_hash(128),
             disclosure: None,
             params: None,
+            ..Default::default()
         },
         JobLeaf {
             field: "dateOfBirth".into(),
@@ -81,6 +82,7 @@ fn fixture_job(out: &str) -> Job {
             params_hash: age_params_hash(6570),
             disclosure: None,
             params: None,
+            ..Default::default()
         },
         JobLeaf {
             field: "investorType".into(),
@@ -90,6 +92,7 @@ fn fixture_job(out: &str) -> Job {
             params_hash: tier_params_hash(1),
             disclosure: None,
             params: None,
+            ..Default::default()
         },
         JobLeaf {
             field: "country".into(),
@@ -99,6 +102,7 @@ fn fixture_job(out: &str) -> Job {
             params_hash: set_params_hash("country_allowlist"),
             disclosure: None,
             params: None,
+            ..Default::default()
         },
     ];
     let subject = JobSubject {
@@ -114,6 +118,7 @@ fn fixture_job(out: &str) -> Job {
             source_sha256: "fixture-hash".into(),
             declared_root: None,
             declared_depth: None,
+            ..Default::default()
         },
     );
     Job {
@@ -125,6 +130,7 @@ fn fixture_job(out: &str) -> Job {
         skip_proofs: false,
         subjects: vec![subject],
         list_commitments: lists,
+        ..Default::default()
     }
 }
 
@@ -156,6 +162,7 @@ fn verifier_accepts_a_real_bundle_in_permissive_mode() {
                 expected_root: None,
             },
             accept_stub: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -199,6 +206,7 @@ fn strict_mode_rejects_stub_bundle() {
                 expected_root: None,
             },
             accept_stub: false,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -223,6 +231,7 @@ fn verifier_rejects_wrong_public_key() {
                 expected_root: None,
             },
             accept_stub: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -249,6 +258,7 @@ fn verifier_rejects_tampered_proof_byte() {
                 expected_root: None,
             },
             accept_stub: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -296,6 +306,7 @@ fn verifier_rejects_tampered_manifest_field() {
                 expected_root: None,
             },
             accept_stub: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -317,6 +328,7 @@ fn verifier_rejects_missing_kyc_hash_file() {
                 expected_root: None,
             },
             accept_stub: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -349,6 +361,7 @@ fn verifier_rejects_swapped_circuit_id() {
                 expected_root: None,
             },
             accept_stub: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -391,6 +404,7 @@ fn verifier_rejects_swapped_set_root() {
                 expected_root: None,
             },
             accept_stub: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -430,6 +444,7 @@ fn verifier_rejects_list_root_swap_via_public_digest_drift() {
                 expected_root: None,
             },
             accept_stub: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -445,6 +460,7 @@ fn verifier_handles_missing_bundle_directory() {
             expected_root: None,
         },
         accept_stub: true,
+        ..Default::default()
     };
     let result = verify_bundle(Path::new("/tmp/this/does/not/exist"), &opts);
     assert!(result.is_err());
