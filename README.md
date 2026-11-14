@@ -1,6 +1,10 @@
 <div align="center">
 
-![Batch verification tool](/assets/kyc-hashing-merkle-root-hero.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/kyc-zk-stark-flow-hero-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/kyc-zk-stark-flow-hero.png">
+  <img alt="KYC records are proved locally into a bundle of zk-STARK proofs: the kycHash root goes on chain, and a counterparty checks claims such as over 18, approved jurisdiction or professional client without ever seeing the underlying values" src="assets/kyc-zk-stark-flow-hero.png">
+</picture>
 
 # Trusset KYC zk-Proof Tool
 
