@@ -28,6 +28,7 @@
 //! WASM entry points live in `wasm.rs` behind the `wasm` cargo feature.
 
 pub mod bundle;
+pub mod v31;
 
 #[cfg(feature = "wasm")]
 pub mod wasm;
@@ -38,8 +39,8 @@ use serde::Serialize;
 use trusset_bundle_format::claims::compute_binding_digest;
 use trusset_bundle_format::leaf::{compute_leaf_hash_bound, compute_proof_digest};
 use trusset_bundle_format::manifest::{
-    canonical_signing_bytes, Manifest, ACCEPTED_MANIFEST_VERSIONS, DISCLOSURE_COMMITMENT_ONLY,
-    MODE_PRODUCTION, MODE_STUB,
+    canonical_signing_bytes, is_v31, Manifest, ACCEPTED_MANIFEST_VERSIONS,
+    DISCLOSURE_COMMITMENT_ONLY, MODE_PRODUCTION, MODE_STUB,
 };
 use trusset_bundle_format::merkle::compute_root_versioned;
 use trusset_bundle_format::registry::{ClaimStatus, ListRegistry, RevocationLog, RootHistory};
@@ -178,6 +179,9 @@ pub struct VerifyReport {
     pub issuer: Option<IssuerReport>,
     /// v3: the as-of evaluation.
     pub temporal: TemporalReport,
+    /// v3.1: the signed header and the attestation the bundle supports.
+    /// `null` for earlier versions.
+    pub header: Option<v31::HeaderReport>,
 }
 
 /// The responsible party, surfaced from the manifest so a report is readable
@@ -318,8 +322,30 @@ pub fn verify_bundle(
 pub fn verify_loaded(loaded: &bundle::LoadedBundle, opts: &VerifyOptions) -> VerifyReport {
     let manifest = &loaded.manifest;
 
-    let version_acceptable = ACCEPTED_MANIFEST_VERSIONS.contains(&manifest.version.as_str());
-    let layout_ok = loaded.layout_ok && version_acceptable;
+    // Merkle v3, the chain block, and leaf predicates exist only in 3.1.0. A
+    // manifest relabelled to an earlier version must not slip past the 3.1.0
+    // checks while keeping 3.1.0 structure.
+    let v31_fields_only_in_v31 = is_v31(&manifest.version)
+        || (manifest.merkle_version != Some(trusset_bundle_format::merkle::MERKLE_VERSION_V3)
+            && manifest.chain.is_none()
+            && manifest
+                .leaves
+                .iter()
+                .all(|l| l.binding.as_ref().is_none_or(|b| b.predicate.is_none())));
+    let version_acceptable =
+        ACCEPTED_MANIFEST_VERSIONS.contains(&manifest.version.as_str()) && v31_fields_only_in_v31;
+    let header = if is_v31(&manifest.version) {
+        Some(v31::check_header(
+            manifest,
+            loaded.header_bytes.as_deref(),
+            loaded.header_sig.as_deref(),
+            opts.anchors.expected_public_key.as_ref(),
+        ))
+    } else {
+        None
+    };
+    let layout_ok =
+        loaded.layout_ok && version_acceptable && header.as_ref().is_none_or(|h| h.present);
     let mode_acceptable = manifest.mode == MODE_PRODUCTION || opts.accept_stub;
     let kyc_hash_file_matches = loaded.kyc_hash_file_text.trim() == manifest.kyc_hash;
 
@@ -390,11 +416,21 @@ pub fn verify_loaded(loaded: &bundle::LoadedBundle, opts: &VerifyOptions) -> Ver
         && (opts.anchors.expected_public_key.is_none() || signature_valid)
         && (opts.anchors.expected_root.is_none() || root_anchor_valid);
 
+    // v3.1: the header must agree with the manifest, the attestation must be
+    // derivable, and under a pinned key the header signature must hold.
+    let header_ok = header.as_ref().is_none_or(|h| {
+        h.present
+            && h.consistent
+            && h.attestation.is_some()
+            && (opts.anchors.expected_public_key.is_none() || h.signature_valid)
+    });
+
     let overall_pass = layout_ok
         && mode_acceptable
         && kyc_hash_file_matches
         && anchors_ok
         && merkle_root_valid
+        && header_ok
         && leaves.iter().all(|l| l.pass);
 
     let resolved_root_matches = resolution
@@ -497,6 +533,7 @@ pub fn verify_loaded(loaded: &bundle::LoadedBundle, opts: &VerifyOptions) -> Ver
             manifest_as_of_date: manifest.as_of_date.clone(),
             epoch_days_source: manifest.epoch_days_source.clone(),
         },
+        header,
     }
 }
 
@@ -760,12 +797,38 @@ fn verify_leaf(
         return (None, report);
     }
 
+    // `params` and `publicInputs` must agree before `paramsHash` is checked:
+    // `params` are not in the leaf hash, so without this a root-anchored
+    // bundle could carry `params` (and a matching `paramsHash`) for a
+    // threshold its proof was never made for.
+    if let Err(reason) = v31::check_params_consistency(entry) {
+        report.reason = Some(reason);
+        return (None, report);
+    }
+
     // `paramsHash` must be reproducible from the recorded parameters, so
     // a counterparty reads the asserted thresholds from the bundle rather
     // than trusting a config file it does not have.
     if let Err(reason) = check_params_hash(entry, circuit_id) {
         report.reason = Some(reason);
         return (None, report);
+    }
+
+    if is_v31(&manifest.version) {
+        if let Err(reason) = v31::check_proof_canonical(proof_bytes) {
+            report.reason = Some(reason);
+            return (None, report);
+        }
+        if let Err(reason) = v31::check_leaf_v31(
+            entry,
+            circuit_id,
+            manifest.epoch_days,
+            proof_bytes.is_empty(),
+            manifest.mode == MODE_STUB,
+        ) {
+            report.reason = Some(reason);
+            return (None, report);
+        }
     }
 
     // Zero-byte proofs are legitimate in exactly two cases: the
@@ -990,6 +1053,14 @@ fn check_params_hash(
     }
 }
 
+/// Public wrapper over `check_params_hash` for the v3.1 disclosure path.
+pub fn check_params_hash_public(
+    entry: &trusset_bundle_format::manifest::LeafEntry,
+    circuit_id: CircuitId,
+) -> Result<(), String> {
+    check_params_hash(entry, circuit_id)
+}
+
 /// Public wrapper over `dispatch_verify` for the WASM granular exports,
 /// which drive their own per-leaf check ladder.
 pub fn dispatch_verify_public(
@@ -1161,6 +1232,7 @@ mod tests {
                 manifest_as_of_date: None,
                 epoch_days_source: None,
             },
+            header: None,
         };
 
         let json = serde_json::to_value(&report).unwrap();
@@ -1187,6 +1259,8 @@ mod tests {
             // present as a key; `temporal` is always present.
             "issuer",
             "temporal",
+            // v3.1. `header` is null before 3.1.0 but always present as a key.
+            "header",
         ];
         for name in &expected_top_level {
             assert!(

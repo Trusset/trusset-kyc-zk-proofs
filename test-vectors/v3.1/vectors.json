@@ -1,0 +1,539 @@
+{
+  "attestation": {
+    "attester": "0x1111111111111111111111111111111111111111",
+    "chainId": 11155111,
+    "hardExpiry": 1858118400,
+    "hub": "0x2222222222222222222222222222222222222222",
+    "investorClass": 2,
+    "keyId": 1,
+    "predicateNames": [
+      "KYC_DONE",
+      "ADULT",
+      "EEA_RESIDENT"
+    ],
+    "predicates": "49",
+    "root": "0x744025bd383f75bfbd5b55504233c87acc27aea55707efb3cf865752e71cc7ab",
+    "softExpiry": 1826582400,
+    "subject": "0xabcdef0123456789abcdef0123456789abcdef01",
+    "version": "3.1.0"
+  },
+  "bundleDir": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01",
+  "bundleNegative": [
+    {
+      "expect": {
+        "failed": "consistent",
+        "overall_pass": false
+      },
+      "header": "negative/bundle_header_other_chain.json",
+      "headerSignature": "0xfc5ddd7d31e4f2bdcef1492fe30cf49e0917aede9a8af8a88cf55bfbaead04d76cc1437ff56edeecc4d34457a0a83350f118f69e75ab45b93f630a3da0108a02",
+      "name": "bundle_header_other_chain"
+    },
+    {
+      "expect": {
+        "failed": "signature_valid",
+        "overall_pass": false
+      },
+      "header": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/header.json",
+      "headerSignature": "0x72e76a9cd20d9c073f812f7c168f965ce285681a0d5afee638d519170bec4c765edc79a59db4bdfafb4a49a5b86479b81e0b731453effc15433053f795997c02",
+      "name": "bundle_header_signed_by_another_key"
+    }
+  ],
+  "chain": {
+    "attester": "0x1111111111111111111111111111111111111111",
+    "chainId": 11155111,
+    "hub": "0x2222222222222222222222222222222222222222",
+    "keyId": 1
+  },
+  "circuitsVersion": 3,
+  "epochDays": 20776,
+  "format": "trusset-kyc-test-vectors/1",
+  "header": {
+    "attester": "0x1111111111111111111111111111111111111111",
+    "chainId": 11155111,
+    "epochDays": 20776,
+    "hub": "0x2222222222222222222222222222222222222222",
+    "keyId": 1,
+    "leafCount": 5,
+    "merkleVersion": 3,
+    "root": "0x744025bd383f75bfbd5b55504233c87acc27aea55707efb3cf865752e71cc7ab",
+    "version": "3.1.0",
+    "wallet": "0xabcdef0123456789abcdef0123456789abcdef01"
+  },
+  "headerSignature": "0x1344dea51d3f678e8308d9bdae1071af766c822a1a93b0a84bb04a37d527275a2ae61d21ce5d37b4341c0bc4c1c54f07defe4700f9072265ffff55b12746d906",
+  "headerSigningBytes": "545255535345542d4b59432d56332e313a4845414445522d2d2d2d2d2d2d2d2d030100744025bd383f75bfbd5b55504233c87acc27aea55707efb3cf865752e71cc7ababcdef0123456789abcdef0123456789abcdef01000000000000512811111111111111111111111111111111111111110000000000aa36a72222222222222222222222222222222222222222000000010000000300000005",
+  "leaves": [
+    {
+      "bindingDigest": "0xf24492c743b72b3fb0fcdcfa724f09237a18b7e2711fdd1df91b8443ae41bb7c",
+      "circuit": "set_membership",
+      "fieldName": "country",
+      "leafHash": "0x9f03d34c65f708e7d5827e3f90820f22a9606c535506a22d90c61ee1bc3f6c16",
+      "paramsHash": "0xd1a00261a15d110c67ca5a36ae068c42b027dc55133b6344363eecda15289432",
+      "path": [
+        "0xa0afb4c842ff7e3fc9cbec261a6f43b97746465bb559f9f44018a5a9ce725fdc",
+        "0x82c4cf8e4230632507ce542af0e2b1f69aa2e968503124e5ad099159d4ffe9cb",
+        "0x4198ba7eddb8abef312cf2c27411ef85d335ab504d3598d2de7dc5d8d45a7170"
+      ],
+      "predicate": "EEA_RESIDENT",
+      "proofDigest": "0x3756685ffcee2b6c56b2efd2b316a10c0d940118e1fcb605660a7bc8634cfddf",
+      "publicDigest": "0xe4e4faaee7669d5e204c3d5fc4f39585c6d63f60f400f6c13744a98a44006a05"
+    },
+    {
+      "bindingDigest": "0x8b3aaa112604fa07e6b027b4c27aad3a7c664da8ee2a4a883c44622140d0befb",
+      "circuit": "age_threshold",
+      "fieldName": "dateOfBirth",
+      "leafHash": "0xa0afb4c842ff7e3fc9cbec261a6f43b97746465bb559f9f44018a5a9ce725fdc",
+      "paramsHash": "0x9ffc234565695be53e736fda2efe71922997613433dccede49b58f1f2931d24c",
+      "path": [
+        "0x9f03d34c65f708e7d5827e3f90820f22a9606c535506a22d90c61ee1bc3f6c16",
+        "0x82c4cf8e4230632507ce542af0e2b1f69aa2e968503124e5ad099159d4ffe9cb",
+        "0x4198ba7eddb8abef312cf2c27411ef85d335ab504d3598d2de7dc5d8d45a7170"
+      ],
+      "predicate": "ADULT",
+      "proofDigest": "0xb5ad1d204248410e37b0fbd9206f94cb7ec8caf7c43b5d2a14739558ce409c1f",
+      "publicDigest": "0x3c52279e920565f971a9b0b8745e5c013330da117fe48039e8416aeac4f001db"
+    },
+    {
+      "bindingDigest": "0x9411773461683458569fc9e8fbfef93307c895a0bbad4c26e6daaa75b33847d8",
+      "circuit": "preimage_knowledge",
+      "fieldName": "documentNumber",
+      "leafHash": "0xa1396aa37212b6a085be872da1f3df25c230860600102f3b376c5a7fff02cd06",
+      "paramsHash": "0xb193f1053e91e8b367d8cc002673d6fc1279b1fcffcbfc603bf0ad68e9e7921a",
+      "path": [
+        "0xb1dcbe6825a138325204ae364d95f055263b355d29ba904b200620b33e383757",
+        "0xcea83e8f1e736880d9cfb55cde012e9ccdb99982ed7e600a32916337dc60b34d",
+        "0x4198ba7eddb8abef312cf2c27411ef85d335ab504d3598d2de7dc5d8d45a7170"
+      ],
+      "predicate": null,
+      "proofDigest": "0x9f217d54845fd6a91843c3a56eacb50f9cd105f4eea6f59123f8bd2d963fc400",
+      "publicDigest": "0xd81b6d5b34a67d5eea3f40a49b0785de1812ef71a14d811140a145b3697d1feb"
+    },
+    {
+      "bindingDigest": "0xfbc790dc6864ab6ab3d00c09913d1debe0ab4556116f2e983828d65fa4744cbb",
+      "circuit": "preimage_knowledge",
+      "fieldName": "firstName",
+      "leafHash": "0xb1dcbe6825a138325204ae364d95f055263b355d29ba904b200620b33e383757",
+      "paramsHash": "0xb193f1053e91e8b367d8cc002673d6fc1279b1fcffcbfc603bf0ad68e9e7921a",
+      "path": [
+        "0xa1396aa37212b6a085be872da1f3df25c230860600102f3b376c5a7fff02cd06",
+        "0xcea83e8f1e736880d9cfb55cde012e9ccdb99982ed7e600a32916337dc60b34d",
+        "0x4198ba7eddb8abef312cf2c27411ef85d335ab504d3598d2de7dc5d8d45a7170"
+      ],
+      "predicate": null,
+      "proofDigest": "0x9f217d54845fd6a91843c3a56eacb50f9cd105f4eea6f59123f8bd2d963fc400",
+      "publicDigest": "0x934591b478c481965c641bb53f84a4d6819bf709a8bd494139380e0333955339"
+    },
+    {
+      "bindingDigest": "0xa5d8d594b13237f3fc89e8e934d221e9ad59bff41f6c424b7ba94dac5a2ecdac",
+      "circuit": "tier_threshold",
+      "fieldName": "investorType",
+      "leafHash": "0xe034ffb0dae4e8ae9b924d8aa00e6e9058f2d545f8ed7b20cfaa8eab75d9d9e4",
+      "paramsHash": "0x220c654c0a1b31f320c43f61cabc3ec404b817838d95bde1ad9c7041a8a12abd",
+      "path": [
+        "0x84095397e18c43b49e540e1b67fd0bf5b19f3242a76fe754e4a393bbca3481e2",
+        "0xe859b0900ea7569dbdf81dde310229a282e91e35be67c2279284fa3b1169d8ad",
+        "0x0a44369f1b2e779ea36366986b6abc8fb3a389f84619978dcf9674b5a2a7546e"
+      ],
+      "predicate": "INVESTOR_CLASS",
+      "proofDigest": "0xd224cd50467f6287c7043e5d9782ddbe7d301e0554f6c0a17b6a1ea386a511bf",
+      "publicDigest": "0x775043bf1a4ac5339602e81caec6415fbb57c1d98d351c4d56f3db774cce18c9"
+    }
+  ],
+  "lists": {
+    "eea": {
+      "contentHash": "0xdeac9fad7ef186a4075c42c60775295a9041fe836b68f2f0ad201d41e216a8aa",
+      "depth": 5,
+      "entries": 30,
+      "root": "0x2bc4dc54a457373e521626cf69795ff45ccc9a1a25cfc9e21afa1494e601df20",
+      "sourceSha256": "0x765c3d1ff5339e523290ba110051c3e7bdbf82708d280fc20c22b7a6fdae3fdc"
+    }
+  },
+  "merkleVersion": 3,
+  "negative": [
+    {
+      "disclosure": "negative/wrong_operator_key.json",
+      "expect": {
+        "failed": "header_signature_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "wrong_operator_key",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6"
+    },
+    {
+      "disclosure": "negative/header_wallet_changed.json",
+      "expect": {
+        "failed": "header_signature_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "header_wallet_changed",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/header_wallet_changed_and_resigned.json",
+      "expect": {
+        "failed": "leaf_hash_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "header_wallet_changed_and_resigned",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/country.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/header_epoch_changed_and_resigned.json",
+      "expect": {
+        "failed": "leaf_hash_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "header_epoch_changed_and_resigned",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/country.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/header_epoch_changed_and_resigned_on_age_leaf.json",
+      "expect": {
+        "failed": "leaf_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "header_epoch_changed_and_resigned_on_age_leaf",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/header_root_changed.json",
+      "expect": {
+        "failed": "header_signature_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "header_root_changed",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/header_root_changed_and_resigned.json",
+      "expect": {
+        "failed": "inclusion_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "header_root_changed_and_resigned",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/header_chain_changed.json",
+      "expect": {
+        "failed": "header_signature_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "header_chain_changed",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/header_key_id_changed.json",
+      "expect": {
+        "failed": "header_signature_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "header_key_id_changed",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/header_leaf_count_changed_and_resigned.json",
+      "expect": {
+        "failed": "inclusion_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "header_leaf_count_changed_and_resigned",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/header_leaf_count_needs_a_longer_path.json",
+      "expect": {
+        "failed": "parsed",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "header_leaf_count_needs_a_longer_path",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/header_root_uppercase.json",
+      "expect": {
+        "failed": "parsed",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "header_root_uppercase",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/header_signature_uppercase.json",
+      "expect": {
+        "failed": "header_signature_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "header_signature_uppercase",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/path_sibling_changed.json",
+      "expect": {
+        "failed": "inclusion_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "path_sibling_changed",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/path_truncated.json",
+      "expect": {
+        "failed": "parsed",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "path_truncated",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/leaf_renamed.json",
+      "expect": {
+        "failed": "leaf_hash_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "leaf_renamed",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/predicate_relabelled.json",
+      "expect": {
+        "failed": "leaf_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "predicate_relabelled",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/predicate_relabelled_with_binding_digest.json",
+      "expect": {
+        "failed": "leaf_hash_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "predicate_relabelled_with_binding_digest",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/country.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/predicate_incompatible_with_circuit.json",
+      "expect": {
+        "failed": "leaf_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "predicate_incompatible_with_circuit",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/params_claim_a_higher_age_than_proved.json",
+      "expect": {
+        "failed": "leaf_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "params_claim_a_higher_age_than_proved",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/public_inputs_changed.json",
+      "expect": {
+        "failed": "leaf_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "public_inputs_changed",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/investor_class_raised_with_digests.json",
+      "expect": {
+        "failed": "leaf_hash_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "investor_class_raised_with_digests",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/investorType.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/proof_swapped.json",
+      "expect": {
+        "failed": "leaf_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "proof_swapped",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/country.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/empty_proof_on_a_predicate_leaf.json",
+      "expect": {
+        "failed": "leaf_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "empty_proof_on_a_predicate_leaf",
+      "proof": "negative/empty.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/marked_commitment_only.json",
+      "expect": {
+        "failed": "leaf_valid",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "marked_commitment_only",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/unexpected_wallet.json",
+      "expect": {
+        "failed": "wallet_matches",
+        "ok": false
+      },
+      "expectedWallet": "0x3333333333333333333333333333333333333333",
+      "name": "unexpected_wallet",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/unknown_leaf_key.json",
+      "expect": {
+        "failed": "parsed",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "unknown_leaf_key",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/unknown_top_level_key.json",
+      "expect": {
+        "failed": "parsed",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "unknown_top_level_key",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "negative/disclosure_version_changed.json",
+      "expect": {
+        "failed": "parsed",
+        "ok": false
+      },
+      "expectedWallet": "",
+      "name": "disclosure_version_changed",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    }
+  ],
+  "note": "Generated by verifier/tests/v31_vectors.rs from fixed test keys. The keys are public; never use them outside tests.",
+  "operatorPublicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+  "otherPublicKey": "22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6",
+  "paramsHashes": {
+    "age_threshold:minAgeDays=6570": "0x9ffc234565695be53e736fda2efe71922997613433dccede49b58f1f2931d24c",
+    "preimage_knowledge:maxValueBytes=128": "0xb193f1053e91e8b367d8cc002673d6fc1279b1fcffcbfc603bf0ad68e9e7921a",
+    "set_membership:listId=country_allowlist": "0x18df693b0584ab677ecba4efcb41fdf3969257b9c451a0d7404ab05303273d6e",
+    "set_membership:listId=eea": "0xd1a00261a15d110c67ca5a36ae068c42b027dc55133b6344363eecda15289432",
+    "tier_threshold:minTier=1": "0x87f7fabd62d2f6bba9b5cf54549a1eaea603b3734db746edebd89e6076b12485",
+    "tier_threshold:minTier=2": "0x220c654c0a1b31f320c43f61cabc3ec404b817838d95bde1ad9c7041a8a12abd",
+    "tier_threshold:minTier=3": "0x21fee3ead6d5f59e3db71465c0c659ba5259c2630db3a2c6b6d9b6af363e8edd"
+  },
+  "positive": [
+    {
+      "disclosure": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/disclosures/country.json",
+      "expect": {
+        "ok": true
+      },
+      "expectedWallet": "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01",
+      "name": "country",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/country.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/disclosures/dateOfBirth.json",
+      "expect": {
+        "ok": true
+      },
+      "expectedWallet": "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01",
+      "name": "dateOfBirth",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/dateOfBirth.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/disclosures/documentNumber.json",
+      "expect": {
+        "ok": true
+      },
+      "expectedWallet": "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01",
+      "name": "documentNumber",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/documentNumber.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/disclosures/firstName.json",
+      "expect": {
+        "ok": true
+      },
+      "expectedWallet": "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01",
+      "name": "firstName",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/firstName.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    },
+    {
+      "disclosure": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/disclosures/investorType.json",
+      "expect": {
+        "ok": true
+      },
+      "expectedWallet": "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01",
+      "name": "investorType",
+      "proof": "bundle/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01/proofs/investorType.bin",
+      "publicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+    }
+  ],
+  "root": "0x744025bd383f75bfbd5b55504233c87acc27aea55707efb3cf865752e71cc7ab",
+  "version": "3.1.0",
+  "wallet": "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01"
+}

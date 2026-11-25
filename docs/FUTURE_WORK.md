@@ -1,6 +1,6 @@
 # Future work
 
-Design directions that are deliberately out of scope for v3.0.0, with the
+Design directions that are deliberately out of scope for v3.1.0, with the
 reasoning and the migration cost each would carry. Nothing here is a
 defect; these are the choices a later major version has to make.
 
@@ -94,33 +94,30 @@ serialization, a new WASM verifier, re-proving every subject, and a fresh
 security review of the new stack's parameters. This is a major-version
 project, not an increment.
 
-## Zero-knowledge blinding
+## Zero-knowledge proofs
 
-The proofs this tool produces are sound but not zero-knowledge in the
-formal sense. Winterfell 0.13 does not add randomized blinding columns to
-the trace, and `derive_prover_seed` in
-[`circuits/common/src/seed.rs`](../circuits/common/src/seed.rs) is
-currently unused: every circuit's `prove()` passes a zero seed that the
-prover discards, so proof bytes are a deterministic function of the
-witness.
+**Status (v3.1).** Winterfell 0.13.1 has no zero-knowledge mode: no hiding
+flag in `ProofOptions`, no prover randomness, unsalted commitments. Proofs are
+deterministic in the witness, and they disclose it: a `set_membership` proof
+carries the committed value in its OOD frame, an `age_threshold` proof yields
+the exact date of birth after a transcript replay, and a `tier_threshold`
+proof yields the exact tier. `circuits/*/tests/proof_disclosure.rs` performs
+the first two recoveries. docs/SECURITY.md, "What a proof reveals", has the
+details and the operating rules that follow.
 
-What actually hides the field values is the hiding commitment: the
-witness is only ever exposed as `Rescue(COMMITMENT_TAG || circuit_id ||
-len || witness || nonce)` with a 32-byte nonce, and the AIR proves
-statements about that commitment. An adversary who guesses a candidate
-value cannot confirm it without the nonce.
+Earlier versions of this note said the commitment nonce hides the value from a
+proof holder. That holds for the commitment and for an inclusion path, not for
+a predicate proof.
 
-The gap is that determinism makes proof bytes a stable fingerprint of the
-`(witness, nonce)` pair. Two bundles for the same subject at the same
-epoch under the same key produce byte-identical proofs, which is exactly
-what the determinism canary asserts and what auditors want. It also means
-a counterparty holding two bundles can tell whether a field changed
-between them without learning its value. Under `security.deterministic:
-false` the per-subject key is fresh, so the nonces and therefore the proof
-bytes differ between issuances and this linkability goes away.
-
-Closing the gap properly needs blinding in the proving stack, which loops
-back to the stack question above.
+**What closing it takes.** Every AIR must allow randomized rows that no
+constraint touches (enough of them per column to exceed the number of
+evaluations a proof reveals), the prover must fill them from fresh randomness,
+and the trace and constraint commitments must be salted, or the stack must
+move to one with a hiding mode. That is a new circuitsVersion with new AIRs for
+all four circuits (three of the `air.rs` files are being reworked separately),
+new proofs for every subject that needs hiding, and a re-vendored WASM. The
+bundle, header, and disclosure formats of v3.1 do not change for it: a hiding
+proof is a different proof under the same leaf hash construction.
 
 ## Prebuilt binaries
 
@@ -146,8 +143,8 @@ process rather than to the code.
 
 **What v3 did instead.** Every bundle records
 `manifest.toolchain.proverSha256`, the digest of the binary that actually ran.
-That is the half of the problem that matters for evidence — tracing a bundle
-to a build — and it is worth having whether or not binaries are ever
+That is the half of the problem that matters for evidence, tracing a bundle
+to a build, and it is worth having whether or not binaries are ever
 published.
 
 ## Per-field evidence dates

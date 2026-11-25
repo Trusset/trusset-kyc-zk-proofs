@@ -4,7 +4,13 @@ use crate::errors::{ErrorCode, ProverError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use trusset_bundle_format::claims::{ClaimDescriptor, ListVersionRef, ValidityInterval};
-use trusset_bundle_format::manifest::IssuerBlock;
+use trusset_bundle_format::header::parse_address;
+use trusset_bundle_format::manifest::{is_v31, is_v3_family, ChainBinding, IssuerBlock};
+use trusset_bundle_format::predicates::{is_leaf_predicate, INVESTOR_CLASS};
+
+/// The passthrough keys a 3.1.0 subject may carry. Both are settings, not
+/// personal values.
+pub const V31_PASSTHROUGH_KEYS: [&str; 2] = ["softExpiryDays", "hardExpiryDays"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -46,6 +52,10 @@ pub struct Job {
     /// without writing any bundle.
     #[serde(default)]
     pub dry_run: bool,
+    /// v3.1: the attester, chain, hub, and hub key id the bundles are issued
+    /// under. Required for a 3.1.0 job that writes bundles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<ChainBinding>,
 }
 
 fn default_deterministic() -> bool {
@@ -71,6 +81,7 @@ impl Default for Job {
             unpinned_epoch: false,
             issuer: None,
             dry_run: false,
+            chain: None,
         }
     }
 }
@@ -120,6 +131,9 @@ pub struct JobLeaf {
     /// rather than being recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list_version: Option<ListVersionRef>,
+    /// v3.1 predicate this leaf proves, from the hub's predicate table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicate: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -167,16 +181,30 @@ impl Job {
         // into. Requiring one here would make the check an operator runs
         // before they have finished configuring depend on the configuration
         // being finished.
-        if self.version == trusset_bundle_format::manifest::MANIFEST_VERSION
-            && self.issuer.is_none()
-            && !self.dry_run
-        {
+        if is_v3_family(&self.version) && self.issuer.is_none() && !self.dry_run {
             return Err(ProverError::new(
                 ErrorCode::IssuerMissing,
-                "a version 3.0.0 job requires an issuer block: the bundle records who is legally \
-                 responsible for its assertions. Run `npm run init` to configure `manifest.issuer` \
-                 in config.json.",
+                format!(
+                    "a version {} job requires an issuer block: the bundle records who is legally \
+                     responsible for its assertions. Run `npm run init` to configure \
+                     `manifest.issuer` in config.json.",
+                    self.version
+                ),
             ));
+        }
+        if is_v31(&self.version) {
+            match self.chain.as_ref() {
+                Some(c) => validate_chain(c)?,
+                None if self.dry_run => {}
+                None => {
+                    return Err(ProverError::new(
+                        ErrorCode::ChainInvalid,
+                        "a version 3.1.0 job requires a chain block (attester, chainId, hub, \
+                         keyId): every bundle is bound to one on-chain attestation. Set `chain` \
+                         in config.json.",
+                    ))
+                }
+            }
         }
         if self.subjects.is_empty() {
             return Err(ProverError::input("job has no subjects"));
@@ -186,9 +214,39 @@ impl Job {
             s.validate().map_err(|e| {
                 ProverError::input(format!("subject[{}] ({}): {}", i, s.subject_id, e.message))
             })?;
+            if is_v31(&self.version) {
+                s.validate_v31().map_err(|e| {
+                    ProverError::new(
+                        e.code,
+                        format!("subject[{}] ({}): {}", i, s.subject_id, e.message),
+                    )
+                })?;
+            }
         }
         Ok(())
     }
+}
+
+/// A chain block must name a real attester and hub on a real chain, under a
+/// key id the hub can have assigned.
+pub fn validate_chain(c: &ChainBinding) -> Result<()> {
+    let bad = |what: &str| ProverError::new(ErrorCode::ChainInvalid, format!("chain.{}", what));
+    for (name, value) in [("attester", &c.attester), ("hub", &c.hub)] {
+        match parse_address(value) {
+            Some(a) if a != [0u8; 20] => {}
+            Some(_) => return Err(bad(&format!("{} is the zero address", name))),
+            None => return Err(bad(&format!("{} is not 0x + 40 hex", name))),
+        }
+    }
+    if c.chain_id == 0 {
+        return Err(bad("chainId must be positive"));
+    }
+    if c.key_id == 0 {
+        return Err(bad(
+            "keyId must be at least 1: the hub numbers an attester's operator keys from 1",
+        ));
+    }
+    Ok(())
 }
 
 impl JobSubject {
@@ -206,6 +264,79 @@ impl JobSubject {
             l.validate().map_err(|e| {
                 ProverError::input(format!("leaf[{}] ({}): {}", i, l.field, e.message))
             })?;
+        }
+        Ok(())
+    }
+
+    /// The 3.1.0 rules: no personal value in clear text, every leaf bound to a
+    /// descriptor, known predicates only, and exactly one leaf behind the
+    /// investor class.
+    pub fn validate_v31(&self) -> Result<()> {
+        match &self.passthrough {
+            serde_json::Value::Object(map) => {
+                for (k, v) in map {
+                    if !V31_PASSTHROUGH_KEYS.contains(&k.as_str()) {
+                        return Err(ProverError::new(
+                            ErrorCode::PassthroughRefused,
+                            format!(
+                                "passthrough.{} is not allowed in a 3.1.0 bundle: only {} may \
+                                 travel in clear text. Prove the value as a leaf instead.",
+                                k,
+                                V31_PASSTHROUGH_KEYS.join(" and ")
+                            ),
+                        ));
+                    }
+                    if v.as_u64().is_none() {
+                        return Err(ProverError::new(
+                            ErrorCode::PassthroughRefused,
+                            format!("passthrough.{} must be a whole number of days", k),
+                        ));
+                    }
+                }
+            }
+            serde_json::Value::Null => {}
+            _ => {
+                return Err(ProverError::new(
+                    ErrorCode::PassthroughRefused,
+                    "passthrough must be an object",
+                ))
+            }
+        }
+        let mut class_leaves = 0usize;
+        for l in &self.leaves {
+            if l.descriptor.is_none() || l.validity.is_none() {
+                return Err(ProverError::new(
+                    ErrorCode::DescriptorMissing,
+                    format!(
+                        "leaf {} has no claim descriptor and validity; every 3.1.0 leaf carries both",
+                        l.field
+                    ),
+                ));
+            }
+            if let Some(p) = l.predicate.as_deref() {
+                if !is_leaf_predicate(p) {
+                    return Err(ProverError::new(
+                        ErrorCode::PredicateInvalid,
+                        format!(
+                            "leaf {} names predicate {}, which no leaf may claim",
+                            l.field, p
+                        ),
+                    ));
+                }
+                if p == INVESTOR_CLASS {
+                    class_leaves += 1;
+                }
+            }
+        }
+        if class_leaves != 1 {
+            return Err(ProverError::new(
+                ErrorCode::PredicateInvalid,
+                format!(
+                    "a 3.1.0 subject needs exactly one INVESTOR_CLASS leaf (a tier_threshold leaf \
+                     whose minTier is the attested class), found {}",
+                    class_leaves
+                ),
+            ));
         }
         Ok(())
     }
@@ -406,6 +537,7 @@ mod tests {
             unpinned_epoch: false,
             issuer: None,
             dry_run: false,
+            chain: None,
             subjects: vec![JobSubject {
                 subject_id: "0x0000000000000000000000000000000000000001".to_string(),
                 passthrough: serde_json::json!({"k": "v"}),
@@ -420,6 +552,7 @@ mod tests {
                     descriptor: None,
                     validity: None,
                     list_version: None,
+                    predicate: None,
                 }],
             }],
             list_commitments: BTreeMap::from([(

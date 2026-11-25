@@ -1,0 +1,131 @@
+{
+  "circuitsVersion": 3,
+  "configHash": "0xabababababababababababababababababababababababababababababababab",
+  "createdAt": "2026-11-19T21:19:09Z",
+  "deterministic": true,
+  "epochDays": 20776,
+  "kycHash": "0x67f016149cbb81310528ee6fa186877669c491c655db6d9f7b8781462349dc42",
+  "leaves": [
+    {
+      "circuit": "set_membership",
+      "circuitId": 2,
+      "commitment": "0xa031f29170125eff77870198af45593acf02004c7a142be19375ccb028447adb",
+      "disclosure": "plaintext",
+      "fieldName": "country",
+      "leafHash": "0x28fc254ec46fe7fbcee4b9e02fc921d929e806683ad790beaca9632aed936375",
+      "params": {
+        "listId": "eea",
+        "sourceSha256": "0x765c3d1ff5339e523290ba110051c3e7bdbf82708d280fc20c22b7a6fdae3fdc"
+      },
+      "paramsHash": "0xd1a00261a15d110c67ca5a36ae068c42b027dc55133b6344363eecda15289432",
+      "proofDigest": "0x3756685ffcee2b6c56b2efd2b316a10c0d940118e1fcb605660a7bc8634cfddf",
+      "proofPath": "proofs/country.bin",
+      "publicDigest": "0xe4e4faaee7669d5e204c3d5fc4f39585c6d63f60f400f6c13744a98a44006a05",
+      "publicInputs": {
+        "commitment": "0xa031f29170125eff77870198af45593acf02004c7a142be19375ccb028447adb",
+        "listId": "eea",
+        "setDepth": 5,
+        "setRoot": "0x2bc4dc54a457373e521626cf69795ff45ccc9a1a25cfc9e21afa1494e601df20"
+      }
+    },
+    {
+      "circuit": "preimage_knowledge",
+      "circuitId": 4,
+      "commitment": "0xcd9621d69ce7cc6df387bfc1d0c6798b09c287eedebe5da35f679b5770cd9b1f",
+      "disclosure": "commitment_only",
+      "fieldName": "firstName",
+      "leafHash": "0x5319061e7ecfde3c53043e00892046c89e55487ae7f40b9b018f1ce36c64b6d0",
+      "params": {
+        "maxValueBytes": 128
+      },
+      "paramsHash": "0xb193f1053e91e8b367d8cc002673d6fc1279b1fcffcbfc603bf0ad68e9e7921a",
+      "proofDigest": "0x9f217d54845fd6a91843c3a56eacb50f9cd105f4eea6f59123f8bd2d963fc400",
+      "proofPath": "proofs/firstName.bin",
+      "publicDigest": "0x934591b478c481965c641bb53f84a4d6819bf709a8bd494139380e0333955339",
+      "publicInputs": {
+        "commitment": "0xcd9621d69ce7cc6df387bfc1d0c6798b09c287eedebe5da35f679b5770cd9b1f"
+      }
+    },
+    {
+      "circuit": "tier_threshold",
+      "circuitId": 3,
+      "commitment": "0x7c206cd4f1bef80348a0738e1a57a64635a2913172da78d200c2dc567526b2c8",
+      "disclosure": "plaintext",
+      "fieldName": "investorType",
+      "leafHash": "0x83b70b027e0fa0b0da8e90060caefdb105b6114bca68b84aaf011907385e89ae",
+      "params": {
+        "minTier": 2
+      },
+      "paramsHash": "0x220c654c0a1b31f320c43f61cabc3ec404b817838d95bde1ad9c7041a8a12abd",
+      "proofDigest": "0xd224cd50467f6287c7043e5d9782ddbe7d301e0554f6c0a17b6a1ea386a511bf",
+      "proofPath": "proofs/investorType.bin",
+      "publicDigest": "0x775043bf1a4ac5339602e81caec6415fbb57c1d98d351c4d56f3db774cce18c9",
+      "publicInputs": {
+        "commitment": "0x7c206cd4f1bef80348a0738e1a57a64635a2913172da78d200c2dc567526b2c8",
+        "minTier": 2
+      }
+    },
+    {
+      "circuit": "preimage_knowledge",
+      "circuitId": 4,
+      "commitment": "0x040dd88b2d187f03298aa7ebf04840f6424f6e1fa982802af847e33be332f50a",
+      "disclosure": "commitment_only",
+      "fieldName": "documentNumber",
+      "leafHash": "0xa2ce5122b140cbe3dbf148e0a9c9f4f6edf24823400e96797dcef72572839e51",
+      "params": {
+        "maxValueBytes": 128
+      },
+      "paramsHash": "0xb193f1053e91e8b367d8cc002673d6fc1279b1fcffcbfc603bf0ad68e9e7921a",
+      "proofDigest": "0x9f217d54845fd6a91843c3a56eacb50f9cd105f4eea6f59123f8bd2d963fc400",
+      "proofPath": "proofs/documentNumber.bin",
+      "publicDigest": "0xd81b6d5b34a67d5eea3f40a49b0785de1812ef71a14d811140a145b3697d1feb",
+      "publicInputs": {
+        "commitment": "0x040dd88b2d187f03298aa7ebf04840f6424f6e1fa982802af847e33be332f50a"
+      }
+    },
+    {
+      "circuit": "age_threshold",
+      "circuitId": 1,
+      "commitment": "0xd50c3f14908979db133b3f41e680638a3e52574f7334922d5b6a26301831d456",
+      "disclosure": "predicate",
+      "fieldName": "dateOfBirth",
+      "leafHash": "0xaa65093dece1f32a64937e7792b5535e75c0363ab0e6c3cc262c6cbced8a6fc8",
+      "params": {
+        "minAgeDays": 6570
+      },
+      "paramsHash": "0x9ffc234565695be53e736fda2efe71922997613433dccede49b58f1f2931d24c",
+      "proofDigest": "0xb5ad1d204248410e37b0fbd9206f94cb7ec8caf7c43b5d2a14739558ce409c1f",
+      "proofPath": "proofs/dateOfBirth.bin",
+      "publicDigest": "0x3c52279e920565f971a9b0b8745e5c013330da117fe48039e8416aeac4f001db",
+      "publicInputs": {
+        "commitment": "0xd50c3f14908979db133b3f41e680638a3e52574f7334922d5b6a26301831d456",
+        "currentEpochDays": 20776,
+        "minAgeDays": 6570
+      }
+    }
+  ],
+  "lists": {
+    "eea": {
+      "root": "0x2bc4dc54a457373e521626cf69795ff45ccc9a1a25cfc9e21afa1494e601df20",
+      "sourceSha256": "0x765c3d1ff5339e523290ba110051c3e7bdbf82708d280fc20c22b7a6fdae3fdc"
+    }
+  },
+  "merkleVersion": 2,
+  "mode": "production",
+  "passthrough": {
+    "country": "DEU",
+    "hardExpiryDays": 730,
+    "investorType": "PROFESSIONAL",
+    "softExpiryDays": 365
+  },
+  "secretsKdfVersion": 2,
+  "stark": {
+    "field": "goldilocks",
+    "hash": "rescue-prime",
+    "library": "winterfell-0.13",
+    "libraryVersion": "0.13",
+    "securityBits": 100
+  },
+  "version": "2.1.0",
+  "walletAddress": "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01"
+}

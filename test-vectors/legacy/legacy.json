@@ -1,0 +1,24 @@
+{
+  "format": "trusset-kyc-legacy-bundles/1",
+  "note": "Proved by the v3.0.0 release (commit 66cd2a0) from fixed test keys. Earlier bundles must keep verifying, strict mode included.",
+  "operatorPublicKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+  "bundles": [
+    {
+      "version": "3.0.0",
+      "dir": "v3.0.0/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01",
+      "root": "0x1b4e74367f28b25619fe3d1543d423287472e8a4a6cc1a63fde40b1efd493bec",
+      "merkleVersion": 2,
+      "toolchain": {
+        "proverSha256": "0x806fc8c95aad8c9e6eb6a35eac0d83486dac6fe2732714b887799edab74f62bd",
+        "proverVersion": "3.0.0"
+      }
+    },
+    {
+      "version": "2.1.0",
+      "dir": "v2.1.0/0xAbCdEf0123456789AbCdEf0123456789AbCdEf01",
+      "root": "0x67f016149cbb81310528ee6fa186877669c491c655db6d9f7b8781462349dc42",
+      "merkleVersion": 2,
+      "toolchain": null
+    }
+  ]
+}

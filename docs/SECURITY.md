@@ -1,15 +1,33 @@
 # Security model
 
-This document describes what `trusset-kyc-hashing` v3 protects against, what
+This document describes what `trusset-kyc-hashing` v3.1 protects against, what
 it assumes, and how the cryptographic primitives compose. It is the primary
 reference for compliance reviewers and external auditors.
 
-v3 changed nothing inside the circuits. What it changed is what a bundle
-records about itself: who is responsible for its assertions, what legal test
-each predicate stands for, how long each claim is asserted, which version of
-which list a set-membership proof was made against, and how to ask what was
-true at a past moment rather than only what is true now. The sections marked
-below describe those additions and the v2 gaps that motivated them.
+v3.1 binds every bundle to one IdentityHub attestation through a signed header,
+removes clear-text personal values from bundles, gives every leaf an inclusion
+path so a holder can disclose one leaf at a time, names the hub predicate each
+leaf proves, and keeps the operator key in an encrypted key file or the macOS
+keychain. It changes nothing inside the circuits, and it does not make proofs
+zero-knowledge: read "What a proof reveals" before deciding who may see a
+proof.
+
+v3 recorded who is responsible for a bundle's assertions, what legal test each
+predicate stands for, how long each claim holds, which list version a proof
+used, and what was true at a past moment. Those sections are unchanged.
+
+## v3.1 at a glance
+
+| Property | How |
+|---|---|
+| A bundle matches only its own hub attestation | The signed header names root, wallet, epochDays, attester, chainId, hub, keyId, merkleVersion and leafCount. `verify --rpc-url` reads the hub and compares |
+| No clear-text personal value in a bundle | `country` and `investorType` are predicate leaves; `passthrough` holds only `softExpiryDays` and `hardExpiryDays`; the prover refuses anything else (`E_PASSTHROUGH_REFUSED`) |
+| One leaf can be checked on its own | Merkle v3 inclusion path, signed header, `verify_disclosure` |
+| A leaf cannot be relabelled | `binding.predicate` is inside the binding digest, so inside the leaf hash and the root |
+| A disclosure cannot pick a weaker circuit | Its circuits version is fixed by the signed header version (3.1.0 means 3), never read from the disclosure |
+| One spelling per document | 3.1.0 manifests and disclosures must equal their typed form (no unknown keys, no nulls); every digest is lowercase canonical hex; proof bytes must be the canonical serialization of the proof |
+| Operator key at rest | scrypt (N = 2^17, r = 8, p = 1) and ChaCha20-Poly1305, or the macOS keychain; environment variables for CI only |
+| Revocation | The hub's `revoke`, `suspend` and `erase` are the authority; `config/registry/revocations.json` is the operator's own record |
 
 ## Threat model
 
@@ -17,9 +35,9 @@ below describe those additions and the v2 gaps that motivated them.
 
 | Threat | Mitigation |
 |---|---|
-| Rainbow-table recovery of low-entropy fields (DOB, country, tier) given a Merkle inclusion proof | Per-leaf hiding commitment `Rescue(COMMITMENT_TAG ‖ circuit_id ‖ len ‖ value ‖ nonce)` with a 32-byte nonce derived from the per-subject key |
+| Rainbow-table recovery of low-entropy fields (DOB, country, tier) from a commitment or a Merkle inclusion path (not from a predicate proof, see "What a proof reveals") | Per-leaf hiding commitment `Rescue(COMMITMENT_TAG ‖ circuit_id ‖ len ‖ value ‖ nonce)` with a 32-byte nonce derived from the per-subject key |
 | Master-key compromise recovering every nonce ever issued | Nonces derive from an independent per-subject key that the master key only wraps (`secretsKdfVersion: 2`). Recovery needs both the master key and that subject's `secrets.enc`. Under `deterministic: true` the subject key is still master-derived - see "Determinism and the wrapping boundary" |
-| Counterparty observing partial disclosure inferring undisclosed fields | Domain-separated leaf tags (`LEAF`, `NODE`) plus circuit ID byte in every leaf hash - siblings reveal nothing about the disclosed field |
+| Counterparty shown one leaf inferring the undisclosed fields | Inclusion-path siblings are leaf hashes and inner nodes over salted commitments, with domain-separated tags (`LEAF`, `NODE`) and the circuit id in every leaf hash, so they reveal nothing about the other fields. The disclosed leaf's own proof does reveal its value ("What a proof reveals") |
 | Cross-subject replay (proof for Alice replayed as proof for Bob) | `walletAddress_bytes` bound into every leaf hash (spec §7) |
 | Cross-epoch replay (proof generated at time T verified as fresh at T+N) | `epochDays` bound into every leaf hash; operators choose `utc_today` / `fixed:<n>` / `env:<VAR>` per `security.epochDaysSource`. Counterparties enforce their own staleness window |
 | Cross-circuit replay (proof for `age_threshold` re-presented as `tier_threshold`) | `CircuitId` u8 (1=age, 2=set, 3=tier, 4=preimage) bound into the leaf hash and into the commitment |
@@ -37,7 +55,7 @@ below describe those additions and the v2 gaps that motivated them.
 | A claim that stopped being true, or was never true | Separate signed revocation records distinguish `lapsed` from `void_ab_initio`. Neither edits the bundle, both are surfaced by the verifier |
 | Silent substitution of a compliance-relevant input | An `investorType` or expiry value that is present but unrecognised quarantines the row instead of taking the configured default. Through v2.1 a mistyped tier was silently recorded as the default and signed |
 | A witness value leaking through a failure report | Prover failure messages name the leaf and the asserted threshold, never the subject's value. `output/failures.csv` travels; through v2.1 it recorded lines like `value 'BRA' not in list` |
-| A manifest whose `proofPath` escapes the bundle directory | `proofPath` is the only manifest field that reaches the filesystem, and a manifest is untrusted input. Every read path — the verifier's loader, the archive builder, and the archive's own structure check — requires a plain `proofs/<name>` entry with no separators, parent references, or leading dot, so a hand-written manifest cannot make a verifier read outside the bundle |
+| A manifest whose `proofPath` escapes the bundle directory | `proofPath` is the only manifest field that reaches the filesystem, and a manifest is untrusted input. Every read path, the verifier's loader, the archive builder, and the archive's own structure check, requires a plain `proofs/<name>` entry with no separators, parent references, or leading dot, so a hand-written manifest cannot make a verifier read outside the bundle |
 | Proof parameters silently weakened below the advertised level | `conjectured_security_bits()` is asserted against `STARK_SECURITY_BITS` at compile time and again at prover startup (`E_WEAK_PROOF_OPTIONS`) |
 
 ### Out of scope
@@ -47,48 +65,141 @@ below describe those additions and the v2 gaps that motivated them.
 | Compromise of the operator's machine while the master key is loaded in memory | Tool-level mitigations (`Zeroize` on secret buffers) reduce the window, but a kernel-level adversary defeats any user-space defense. Use HSM-backed secret loading at the OS layer |
 | Side-channel attacks against the Goldilocks field arithmetic | Winterfell's implementation is not constant-time; acceptable for STARK proving, which is not a real-time secret-handling operation |
 | Quantum attacks on ed25519 manifest signing | ed25519 is pre-quantum. The Rescue-Prime STARK layer is post-quantum-friendly, the manifest signature is not. Root-anchored verification avoids the signature entirely when the root is known from chain |
-| Formal zero-knowledge of the proof bytes | Winterfell 0.13 adds no blinding columns and proofs are deterministic in the witness. Hiding rests on the commitment nonce. See [FUTURE_WORK.md](FUTURE_WORK.md) |
+| Hiding the witness from whoever holds a predicate proof | Winterfell 0.13 has no zero-knowledge mode. A predicate proof discloses its value; see "What a proof reveals". Hiding rests on the commitment nonce and on who is given a proof |
 | Adversary with arbitrary write access to `/output` after the prover finishes | The verifier catches tampered bytes but not deletion. Standard filesystem ACLs apply |
 | KYC data ingestion (`/input` is trusted) | The tool assumes records come from a vetted source. Bad input produces validation failures, not silent acceptance |
 
-## What the zk layer does and does not hide
+## What a proof reveals
 
-The zk layer protects a field only if that field's value is not also
-published outside it. Two fields in the default pipeline are published
-outside it, because the issuer backend requires them: `country` is stored
-on the customer record and drives transfer-rule evaluation, and
-`investorType` becomes a uint8 argument to the on-chain `verifyIdentity`
-call. Both appear in cleartext in the batch index CSV and in the signed
-`manifest.passthrough` block.
+**Winterfell 0.13 has no zero-knowledge option.** Checked in the 0.13.1
+sources: `ProofOptions::new` takes no hiding flag, the prover draws no
+randomness, and trace and constraint commitments are unsalted Merkle trees.
+Enabling hiding would need new AIRs with randomized trace rows (for
+`age_threshold` and `tier_threshold` that means editing their `air.rs`), so
+v3.1 does not enable it and there is no circuitsVersion 4. Proof bytes are a
+deterministic function of the witness and the nonce.
 
-Every leaf therefore records a `disclosure` class, so a reader of the
-bundle can tell what a given proof is actually worth:
+A proof carries every trace column evaluated at an out-of-domain point `z` and
+at `z * g` (the OOD frame), the full trace rows at 27 queried positions of the
+low-degree extension with their Merkle paths, the composition polynomial at the
+same points, and the FRI layers. Anyone can recompute `z` by replaying the
+public transcript, as the verifier does. What that discloses, per circuit:
 
-| Field | Circuit | Disclosure | What a counterparty learns |
+| Circuit | Revealed to anyone holding the proof | How |
+|---|---|---|
+| `set_membership` | **The committed value** (the country code of an `EEA_RESIDENT` or `RESIDENCY_ON_FILE` leaf) | Witness columns 12..24 are constant over all rows, so their OOD values are the witness field elements in the clear. No transcript replay needed. `circuits/set_membership/tests/proof_disclosure.rs` reads `DEU` out of the EEA vector proof |
+| `age_threshold` | **The exact date of birth** | Rows 1..31 of the 22 slack-bit columns hold a fixed public pattern, so row 0 is the only unknown in each column polynomial and one OOD value solves it. The bits give `currentEpochDays - dob - minAgeDays`. `circuits/age_threshold/tests/proof_disclosure.rs` recovers the date from the proof alone |
+| `tier_threshold` | The exact tier | The tier column holds the tier on rows 0..2 and a public pattern after; same method. For an `INVESTOR_CLASS` leaf the tier equals the attested class, so nothing beyond the attestation leaks; for an `ACCREDITED` leaf with a fixed floor it does |
+| `preimage_knowledge` | Treat the value as revealed | The length bits are constant columns; the 64-row Rescue columns are nearly determined by the revealed evaluations. Not used by the shipped configs |
+| `commitment_only` | Nothing beyond the commitment | No proof is produced. The commitment is Rescue over the value and a 32-byte per-leaf nonce, which is not in the bundle |
+
+So a predicate leaf proves its predicate *and* hands its value to whoever gets
+its proof. In practice:
+
+- Give a predicate proof only to a party entitled to the value. The issuer
+  backend already holds the values; a bank relying on a holder's disclosure
+  learns the value of each leaf it is shown, not of the others.
+- What goes on chain is unaffected: the hub stores the root, the class, the
+  predicate bits and the dates. Proofs never go on chain, and the root links
+  to nothing once the issuer deletes the bundle secrets.
+- Names and document numbers are `commitment_only` and stay hidden.
+- Two bundles for the same subject, date, and key produce identical proof
+  bytes, so a holder of both can tell whether a value changed. Under
+  `security.deterministic: false` the nonces, and with them the proofs,
+  differ per issuance.
+
+Commitments keep their 32-byte nonce. Hiding proofs are tracked in
+[FUTURE_WORK.md](FUTURE_WORK.md).
+
+## What the root authenticates, and what the signatures do
+
+A verifier anchored only on the on-chain root (`--root`) checks the leaf set:
+every leaf's commitment, public inputs, proof, binding block, predicate, and
+so the investor class and the predicate bits. It does not check the manifest
+signature or the header signature, so it does not authenticate the `chain`
+block, the header, or the expiry days in `passthrough`. Anchor on the operator
+key as well (or use `verify --rpc-url`, which takes the key and the root from
+the hub) before relying on those. A backend that builds the attest calldata
+from `attestation_from_manifest` should verify the bundle under the attester's
+key first.
+
+## Disclosure in a 3.1.0 bundle
+
+| Field | Leaf | Predicate | In clear text anywhere |
 |---|---|---|---|
-| `country` | `set_membership` | `plaintext` | The exact value, from the batch CSV and `passthrough`. The proof adds integrity, not privacy |
-| `investorType` | `tier_threshold` | `plaintext` | The exact value, same sources. The proof adds integrity, not privacy |
-| `nationality` | `set_membership` | `predicate` | Only that it is in the committed allowlist |
-| `documentIssuingCountry` | `set_membership` | `predicate` | Only that it is in the committed allowlist |
-| `dateOfBirth` | `age_threshold` | `predicate` | Only that the age is at or above the recorded threshold |
-| `firstName` | `commitment_only` | `commitment_only` | Only that a commitment exists and is in the root |
-| `lastName` | `commitment_only` | `commitment_only` | Same |
-| `documentNumber` | `commitment_only` | `commitment_only` | Same |
-| `documentType` | `commitment_only` | `commitment_only` | Same |
+| `country` | `set_membership` on `eea` (optional) | `EEA_RESIDENT` | No. Revealed by its proof (above) |
+| `country@country_allowlist` | `set_membership` on `country_allowlist` | `RESIDENCY_ON_FILE` | No. Revealed by its proof |
+| `nationality` | `set_membership` | `CITIZENSHIP_ON_FILE` | No. Revealed by its proof |
+| `documentIssuingCountry` | `set_membership` | none | No. Revealed by its proof |
+| `dateOfBirth` | `age_threshold` | `ADULT` | No. Revealed by its proof |
+| `investorType` | `tier_threshold`, `minTier` = the subject's class | `INVESTOR_CLASS` | The class is the attestation's `investorClass`, on chain by design |
+| `firstName`, `lastName`, `documentType`, `documentNumber` | `commitment_only` | none | No |
 
-The `country` and `investorType` rows are the honest statement of a real
-limitation: **for those two fields the zero-knowledge property provides no
-privacy benefit in the default Trusset pipeline**, because the plaintext
-travels alongside the proof by design. Their circuits are retained because
-they still bind the disclosed value cryptographically into `kycHash`, so a
-counterparty can detect a CSV row that disagrees with the bundle. An
-operator who does not feed the Trusset issuer backend, and therefore does
-not need the plaintext, can drop those fields from `mapping` and keep only
-the predicate leaves.
+The batch index CSV of a 3.1.0 run has no `country` column. `softExpiryDays`
+and `hardExpiryDays` remain passthrough settings, covered by the manifest
+signature only.
 
-`softExpiryDays` and `hardExpiryDays` are passthrough only. They are never
-witnessed by any circuit and are not covered by any proof, only by the
-manifest signature.
+Bundles before 3.1.0 carry `country` and `investorType` in clear text in
+`passthrough` and in the index CSV, and mark those leaves `plaintext`.
+
+## Operator keys
+
+The operator key signs manifests, headers, and registry records. With it sits
+the master key that wraps each subject's key in `secrets.enc`.
+
+| `security.keyStore` | Storage |
+|---|---|
+| `{ "type": "file", "path": ".trusset/operator.key" }` | Both keys in one file, encrypted with ChaCha20-Poly1305 under a key derived from a passphrase with scrypt (N = 2^17, r = 8, p = 1, 32-byte salt). The format, public key, and KDF parameters are the AEAD's associated data, so editing any of them fails decryption. Mode 0600. Passphrases under 12 characters are refused |
+| `{ "type": "keychain" }` | The macOS keychain, service `trusset-kyc-operator`. Written through `security -i` on stdin, so the secret is never in a process argument list |
+| absent | `TRUSSET_KYC_SIGNING_KEY` and `TRUSSET_KYC_MASTER_KEY`. For CI only |
+
+The passphrase is read from the terminal without echo, or from
+`TRUSSET_KYC_KEY_PASSPHRASE` for one unattended command. The CLI hands the
+decrypted keys to the Rust binaries on the first line of their stdin
+(`TRUSSET_KYC_KEYS_STDIN=1`), never through the environment or a file.
+`npm run key -- create | encrypt | show` creates a key, moves existing keys
+into a store, and prints the public key, the hub `keyId`, and the
+`setAttesterProfile` calldata.
+
+**Rotation.** Publishing a new key with `setAttesterProfile` makes the hub
+assign the next `keyId` and keep the old one at `operatorKeyAt(attester,
+oldKeyId)`. Headers name their `keyId`, so roots issued under an older key keep
+verifying against the key that signed them.
+
+## Revocation
+
+The hub is the authority: `revoke`, `suspend`, and `erase` by the attester end
+reliance on an attestation for every on-chain reader, and `verify --rpc-url`
+reports the hub status. `config/registry/revocations.json` remains the
+operator's signed record of lapses and voidances, used for as-of answers from
+an archive. It does not change what the hub says; record a revocation in both.
+
+## Format strictness in 3.1.0
+
+- Manifests and disclosures must equal their own typed form: an unknown key
+  anywhere, or an explicit null, is refused.
+- `publicInputs` and `params` have a fixed key set per circuit, `proofPath` is
+  `proofs/<fieldName>.bin`, and `disclosure` is `predicate` or
+  `commitment_only`.
+- Every digest is `0x` + 64 lowercase hex of a canonical field element.
+- `publicDigest` is recomputed from `publicInputs`, and an age leaf's
+  `currentEpochDays` must equal the batch date.
+- `params` must agree with `publicInputs` for every manifest version. Before
+  this check a root-anchored bundle could carry `params` and a matching
+  `paramsHash` for a threshold its proof was not made for.
+- `proofDigest` packs bytes into field elements with zero padding and no
+  length prefix, and Winterfell ignores bytes after a proof, so a proof with a
+  trailing zero byte has the same digest and verifies as the same proof. 3.1.0
+  requires proof bytes to be exactly the serialization of the proof they
+  decode to.
+- Merkle v3, the `chain` block, and `binding.predicate` are valid only in a
+  3.1.0 manifest, so a 3.1.0 manifest relabelled as 3.0.0 fails.
+- The header signature is checked with strict ed25519 (weak keys and
+  non-canonical signatures refused).
+
+`verifier/tests/v31_tamper_matrix.rs` mutates disclosures, headers, paths,
+proofs, and manifests from a fixed seed (`TRUSSET_FUZZ_ITERS` scales it) and
+requires every mutation to be refused or to leave the meaning unchanged.
 
 ## Cryptographic primitives
 
@@ -109,10 +220,10 @@ The CLI has three runtime dependencies: `@noble/hashes`, `commander`, and the
 two `csv-*` parsers. `npm audit` reports zero advisories.
 
 Through v3.0.0-rc this list also carried `ethers`, used for exactly two
-functions — `isAddress` and `getAddress`. It brought roughly twenty transitive
+functions, `isAddress` and `getAddress`. It brought roughly twenty transitive
 packages including a WebSocket client and an ENS normalizer, and produced
 fifteen advisories, one of them high severity (`ws`, uninitialized memory
-disclosure). None was reachable — the tool opens no sockets — but a tool whose
+disclosure). None was reachable, the tool opens no sockets, but a tool whose
 security model is "no outbound network calls, ever" has no business shipping a
 WebSocket library, and every downstream security review would have had to
 reason about it.
@@ -271,8 +382,8 @@ An allowlist changes when a jurisdiction is added or a sanctions list updates.
 `trusset-list-commit --output` wrote over the previous file. A
 `set_membership` proof records the Merkle root of the list it was proved
 against, so once a list had been rotated, nothing on disk mapped an old root
-back to the values it committed to. The bundles kept verifying — that part of
-this document was always accurate — but a reader holding one could establish
+back to the values it committed to. The bundles kept verifying, that part of
+this document was always accurate, but a reader holding one could establish
 only "member of the set with root `0x9078…`" and never what that set was.
 `config.json`, which named the list files, is `.gitignore`d, so the
 configuration that produced a bundle was not retained either.
@@ -313,7 +424,7 @@ by a proof), or to open one before the current version started.
    (they re-verify, they do not fail).
 
 **Existing bundles keep verifying, and now they also stay interpretable.** A
-verifier holding the registry — or an archive, which carries it — resolves an
+verifier holding the registry, or an archive, which carries it, resolves an
 old proof's `setRoot` back to the version it used and the values that version
 contained:
 
@@ -330,7 +441,7 @@ Through v2.1 a leaf asserted a numeric threshold and nothing else. `minAgeDays:
 6570` recorded a day count; it did not record which legal test that count
 stands for, who warrants it, what the underlying value was checked against, or
 how long the assertion holds. Nothing in the repository named a regulatory
-framework — the tiers `NONE / RETAIL / PROFESSIONAL / ELIGIBLE_COUNTERPARTY`
+framework, the tiers `NONE / RETAIL / PROFESSIONAL / ELIGIBLE_COUNTERPARTY`
 are the MiFID II client-categorisation set and were nowhere declared as such.
 
 Every v3 leaf carries:
@@ -362,7 +473,7 @@ relied-upon firm applied, which this tool cannot observe.
 `{0,1,2}` inside the AIR. The ordering is therefore a property of the circuit,
 not configurable metadata, and v3 does not change it.
 
-It is sound for the predicate the circuit proves — a sophistication floor —
+It is sound for the predicate the circuit proves, a sophistication floor -
 and matches how the categories escalate in practice. Its limits, stated so a
 reviewer does not have to infer them: a per-se professional and a professional
 who opted up under Annex II §II.1 are both `2` here and carry materially
@@ -383,7 +494,7 @@ count from. They were never an expiry model and are retained only for the
 issuer backend that consumes them.
 
 The model is per-leaf validity intervals: `from`, optional `until`, and
-`basisAsOf` — the date the underlying evidence was examined, which is not the
+`basisAsOf`, the date the underlying evidence was examined, which is not the
 date the claim starts. The gap between them is the staleness a reviewer wants
 to see, so it is recorded rather than assumed to be zero.
 
@@ -393,7 +504,7 @@ Ending a claim is a separate signed record in
 | | `lapsed` | `void_ab_initio` |
 |---|---|---|
 | Means | The claim was true and stopped being true | The claim was never true |
-| Carries `effectiveFrom` | Required | Rejected — naming a date would imply it held before then |
+| Carries `effectiveFrom` | Required | Rejected: naming a date would imply it held before then |
 | Reliance before that date | Stands | In question |
 | Bundle still verifies | Yes | **Yes** |
 | `temporal.entitled` | False from the date on | False at every instant |
@@ -421,8 +532,8 @@ or below that height and reports whether it is this bundle's root. An anchor is
 never rewritten: recording the same publication twice is a no-op, and recording
 a *different* root at the same height is refused.
 
-When nothing resolves — no history supplied, or nothing published at or before
-that height — entitlement is reported as **NO**, with a note distinguishing
+When nothing resolves, no history supplied, or nothing published at or before
+that height, entitlement is reported as **NO**, with a note distinguishing
 "unknown" from "false". An entitlement question is never answered YES from
 absent evidence.
 
@@ -518,8 +629,8 @@ README documented `--public-key <hex>` and no command emitted that hex, so the
 offline path could not be run by anyone who had not read the test suite. It is
 now printed by `npm run init` and `npm run show`, and recorded in
 `manifest.issuer.publicKey`. Recording it in the manifest does not make the
-signature self-authenticating — an adversary who rewrites the manifest rewrites
-that field too — but it tells a counterparty which key to obtain out of band,
+signature self-authenticating, an adversary who rewrites the manifest rewrites
+that field too, but it tells a counterparty which key to obtain out of band,
 and the verifier reports when a caller-supplied key disagrees with the one the
 bundle names.
 
@@ -603,15 +714,15 @@ signed manifest therefore requires re-vendoring the backend's WASM via
 [`scripts/rebuild-wasm.sh`](../scripts/rebuild-wasm.sh) as part of the same
 change.
 
-## What v2.1 does NOT yet protect
+## What v3.1 does NOT yet protect
 
-- **Formal zero knowledge.** Proofs carry no blinding and are
-  deterministic in the witness; hiding rests on the commitment nonce.
-  See [FUTURE_WORK.md](FUTURE_WORK.md).
+- **Zero knowledge.** Proofs carry no blinding and disclose the values of
+  predicate leaves (see "What a proof reveals").
 - **Post-quantum manifest signing.** ed25519 is pre-quantum. Root-anchored
   verification sidesteps it when the root is known from chain.
-- **HSM integration.** The master key arrives via env var. HSM backing is
-  the spec §17 workstream; the API surface stays the same.
+- **HSM integration.** Keys live in an encrypted file or the macOS keychain
+  and are decrypted into the CLI process for a run. HSM signing is the spec
+  §17 workstream.
 - **`preimage_knowledge` semantics.** What that circuit does and does not
   establish is documented in [CIRCUITS.md](CIRCUITS.md); it is the reason
   `commitment_only` exists.

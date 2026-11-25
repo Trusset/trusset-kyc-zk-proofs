@@ -32,6 +32,7 @@ export function buildIndexRows(
   successes: BundleSummary[],
   raw: boolean,
   includeIndex: boolean,
+  omitCountry = false,
 ): IndexRow[] {
   const successByWallet = new Map<string, BundleSummary>();
   for (const s of successes) successByWallet.set(s.walletAddress, s);
@@ -41,9 +42,11 @@ export function buildIndexRows(
   for (const r of records) {
     const s = successByWallet.get(r.walletAddress);
     if (!s) continue; // skipped: this row's subject failed in the prover
+    // 3.1.0 index files carry no clear-text country: it is a predicate leaf
+    // now, and the index file travels further than the bundle does.
     const row: IndexRow = {
       walletAddress: r.walletAddress,
-      country: r.country,
+      ...(omitCountry ? {} : { country: r.country }),
       investorType: r.investorType,
       softExpiryDays: r.softExpiryDays,
       hardExpiryDays: r.hardExpiryDays,

@@ -92,6 +92,7 @@ fn tier_leaf() -> JobLeaf {
         descriptor: Some(descriptor()),
         validity: Some(validity()),
         list_version: None,
+        predicate: None,
     }
 }
 
@@ -107,6 +108,7 @@ fn job_with(leaves: Vec<JobLeaf>, output_root: &str) -> Job {
         unpinned_epoch: false,
         issuer: Some(issuer()),
         dry_run: false,
+        chain: None,
         subjects: vec![JobSubject {
             subject_id: WALLET.into(),
             passthrough: serde_json::json!({}),
@@ -256,6 +258,7 @@ fn set_leaf(version_ref: ListVersionRef) -> JobLeaf {
         descriptor: Some(descriptor()),
         validity: Some(validity()),
         list_version: Some(version_ref),
+        predicate: None,
     }
 }
 
@@ -423,6 +426,7 @@ fn a_dry_run_reports_every_failing_leaf_on_a_subject() {
         descriptor: Some(descriptor()),
         validity: Some(validity()),
         list_version: None,
+        predicate: None,
     };
     let mut also_under_age = under_age.clone();
     also_under_age.field = "dateOfBirth@7665d".into();

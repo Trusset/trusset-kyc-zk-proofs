@@ -20,13 +20,32 @@
 //!      `hash_two` under `NODE_TAG`. No layer is ever odd.
 //!   4. Wrap: `root = Rescue(MERKLE_ROOT_TAG ‖ inner_root ‖
 //!      leaf_count_le8 ‖ arity_u8)` with arity fixed at 2.
+//!
+//! `compute_root_v3` (`manifest.merkleVersion: 3`, manifest 3.1.0) is the v2
+//! tree with the wrap under its own tag, `MERKLE_ROOT_V3_TAG`, and every leaf
+//! gets an inclusion path: the siblings from the padded leaf layer up to the
+//! inner root, `tree_depth(leaf_count)` of them. Pairs are merged smaller
+//! first, so a path needs no direction bits. A verifier holding one leaf, its
+//! path, and the signed `leafCount` rebuilds the root:
+//!
+//! ```text
+//! node = leaf_hash
+//! for s in path: node = Rescue(NODE_TAG ‖ min(node, s) ‖ max(node, s))
+//! root = Rescue(MERKLE_ROOT_V3_TAG ‖ node ‖ leaf_count_le8 ‖ 0x02)
+//! ```
+//!
+//! The path length is fixed by `leafCount`, so an inner node can never be
+//! presented as a leaf, and a padding leaf cannot be disclosed because a
+//! verifier recomputes the leaf hash from the leaf's own fields.
 
 use trusset_circuits_common::{
     digest_to_bytes, hash_bytes_with_tag, hash_two, Digest, MERKLE_PAD_TAG, MERKLE_ROOT_TAG,
+    MERKLE_ROOT_V3_TAG,
 };
 
 pub const MERKLE_VERSION_V1: u32 = 1;
 pub const MERKLE_VERSION_V2: u32 = 2;
+pub const MERKLE_VERSION_V3: u32 = 3;
 pub const MERKLE_ARITY: u8 = 2;
 
 /// Sort leaves in-place (by big-endian byte representation) and compute the
@@ -133,11 +152,101 @@ pub fn compute_root_v2(leaves: &[Digest]) -> (Digest, Vec<usize>) {
     (hash_bytes_with_tag(&MERKLE_ROOT_TAG, &wrap), sorted_indices)
 }
 
+/// Number of siblings on a v3 inclusion path for a tree of `leaf_count`
+/// leaves: `log2(max(2, next_power_of_two(leaf_count)))`.
+#[must_use]
+pub fn tree_depth(leaf_count: usize) -> usize {
+    leaf_count.next_power_of_two().max(2).trailing_zeros() as usize
+}
+
+fn merge_sorted_pair(left: &Digest, right: &Digest) -> Digest {
+    if digest_to_bytes(left) <= digest_to_bytes(right) {
+        hash_two(left, right)
+    } else {
+        hash_two(right, left)
+    }
+}
+
+fn wrap_v3(inner_root: &Digest, leaf_count: u64) -> Digest {
+    let mut wrap = Vec::with_capacity(32 + 8 + 1);
+    wrap.extend_from_slice(&digest_to_bytes(inner_root));
+    wrap.extend_from_slice(&leaf_count.to_le_bytes());
+    wrap.push(MERKLE_ARITY);
+    hash_bytes_with_tag(&MERKLE_ROOT_V3_TAG, &wrap)
+}
+
+/// The v3 root, the `sorted_indices` contract of `compute_root`, and one
+/// inclusion path per input leaf, indexed like the input.
+pub fn compute_root_v3_with_paths(leaves: &[Digest]) -> (Digest, Vec<usize>, Vec<Vec<Digest>>) {
+    assert!(
+        !leaves.is_empty(),
+        "cannot build Merkle root from empty leaves"
+    );
+    let leaf_count = leaves.len() as u64;
+    let mut indexed: Vec<(usize, Digest, [u8; 32])> = leaves
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (i, *d, digest_to_bytes(d)))
+        .collect();
+    indexed.sort_by(|a, b| a.2.cmp(&b.2));
+    let sorted_indices: Vec<usize> = indexed.iter().map(|t| t.0).collect();
+    let mut layer: Vec<Digest> = indexed.into_iter().map(|t| t.1).collect();
+    layer.resize(
+        leaves.len().next_power_of_two().max(2),
+        padding_leaf(leaf_count),
+    );
+
+    let mut layers: Vec<Vec<Digest>> = vec![layer];
+    while layers.last().map(|l| l.len()).unwrap_or(0) > 1 {
+        let current = layers.last().expect("non-empty");
+        let next: Vec<Digest> = current
+            .chunks(2)
+            .map(|pair| merge_sorted_pair(&pair[0], &pair[1]))
+            .collect();
+        layers.push(next);
+    }
+    let inner_root = layers.last().expect("non-empty")[0];
+
+    let mut paths: Vec<Vec<Digest>> = vec![Vec::new(); leaves.len()];
+    for (pos, &orig) in sorted_indices.iter().enumerate() {
+        let mut idx = pos;
+        let mut path = Vec::with_capacity(layers.len() - 1);
+        for layer in &layers[..layers.len() - 1] {
+            path.push(layer[idx ^ 1]);
+            idx /= 2;
+        }
+        paths[orig] = path;
+    }
+    (wrap_v3(&inner_root, leaf_count), sorted_indices, paths)
+}
+
+/// The v3 root over `leaves`, with the `sorted_indices` contract of
+/// `compute_root`.
+pub fn compute_root_v3(leaves: &[Digest]) -> (Digest, Vec<usize>) {
+    let (root, sorted, _) = compute_root_v3_with_paths(leaves);
+    (root, sorted)
+}
+
+/// Rebuild a v3 root from one leaf and its inclusion path. `None` when the
+/// path length does not match `leaf_count` or the count is zero.
+#[must_use]
+pub fn root_from_path_v3(leaf: &Digest, path: &[Digest], leaf_count: u64) -> Option<Digest> {
+    if leaf_count == 0 || path.len() != tree_depth(usize::try_from(leaf_count).ok()?) {
+        return None;
+    }
+    let mut node = *leaf;
+    for sibling in path {
+        node = merge_sorted_pair(&node, sibling);
+    }
+    Some(wrap_v3(&node, leaf_count))
+}
+
 /// Dispatch on the manifest's `merkleVersion` (absent = 1).
 pub fn compute_root_versioned(leaves: &[Digest], version: u32) -> Option<(Digest, Vec<usize>)> {
     match version {
         MERKLE_VERSION_V1 => Some(compute_root(leaves)),
         MERKLE_VERSION_V2 => Some(compute_root_v2(leaves)),
+        MERKLE_VERSION_V3 => Some(compute_root_v3(leaves)),
         _ => None,
     }
 }
@@ -336,6 +445,68 @@ mod tests {
         let (v2, _) = compute_root_v2(&leaves);
         assert_eq!(compute_root_versioned(&leaves, 1).unwrap().0, v1);
         assert_eq!(compute_root_versioned(&leaves, 2).unwrap().0, v2);
-        assert!(compute_root_versioned(&leaves, 3).is_none());
+        assert_eq!(
+            compute_root_versioned(&leaves, 3).unwrap().0,
+            compute_root_v3(&leaves).0
+        );
+        assert!(compute_root_versioned(&leaves, 4).is_none());
+    }
+
+    #[test]
+    fn tree_depth_matches_the_padded_width() {
+        assert_eq!(tree_depth(1), 1);
+        assert_eq!(tree_depth(2), 1);
+        assert_eq!(tree_depth(3), 2);
+        assert_eq!(tree_depth(4), 2);
+        assert_eq!(tree_depth(5), 3);
+        assert_eq!(tree_depth(9), 4);
+        assert_eq!(tree_depth(256), 8);
+    }
+
+    #[test]
+    fn v3_paths_rebuild_the_root_for_every_leaf_and_shape() {
+        for n in [1usize, 2, 3, 4, 5, 7, 8, 9, 16, 17] {
+            let leaves: Vec<Digest> = (0..n as u8).map(leaf).collect();
+            let (root, sorted, paths) = compute_root_v3_with_paths(&leaves);
+            assert_eq!(root, compute_root_v3(&leaves).0);
+            assert_eq!(sorted, compute_root_v2(&leaves).1);
+            for (i, l) in leaves.iter().enumerate() {
+                assert_eq!(paths[i].len(), tree_depth(n));
+                assert_eq!(
+                    root_from_path_v3(l, &paths[i], n as u64),
+                    Some(root),
+                    "leaf {} of {}",
+                    i,
+                    n
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn v3_root_is_distinct_from_v2_and_binds_the_count() {
+        for n in [1usize, 2, 3, 5, 8] {
+            let leaves: Vec<Digest> = (0..n as u8).map(leaf).collect();
+            assert_ne!(compute_root_v3(&leaves).0, compute_root_v2(&leaves).0);
+        }
+        let leaves: Vec<Digest> = (0u8..3).map(leaf).collect();
+        let (root, _, paths) = compute_root_v3_with_paths(&leaves);
+        assert_ne!(root_from_path_v3(&leaves[0], &paths[0], 4), Some(root));
+        assert_eq!(root_from_path_v3(&leaves[0], &paths[0], 5), None);
+        assert_eq!(root_from_path_v3(&leaves[0], &paths[0], 0), None);
+    }
+
+    #[test]
+    fn v3_paths_refuse_tampering() {
+        let leaves: Vec<Digest> = (0u8..5).map(leaf).collect();
+        let (root, _, paths) = compute_root_v3_with_paths(&leaves);
+        let mut wrong = paths[2].clone();
+        wrong[1] = leaf(99);
+        assert_ne!(root_from_path_v3(&leaves[2], &wrong, 5), Some(root));
+        assert_ne!(root_from_path_v3(&leaf(98), &paths[2], 5), Some(root));
+        let short = &paths[2][..paths[2].len() - 1];
+        assert_eq!(root_from_path_v3(&leaves[2], short, 5), None);
+        let pad = padding_leaf(5);
+        assert_ne!(root_from_path_v3(&pad, &paths[2], 5), Some(root));
     }
 }

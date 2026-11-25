@@ -25,6 +25,26 @@ pub fn verify(
     vk.verify(message, &sig).is_ok()
 }
 
+/// `verify` with ed25519-dalek's strict checks: refuses weak public keys and
+/// non-canonical signature encodings. Used for the v3.1 header, a new format
+/// with no signatures in the field that the strict rules could reject.
+pub fn verify_strict(
+    public_key: &[u8; PUBLIC_KEY_LEN],
+    message: &[u8],
+    signature: &[u8; SIGNATURE_LEN],
+) -> bool {
+    let Ok(vk) = VerifyingKey::from_bytes(public_key) else {
+        return false;
+    };
+    if vk.is_weak() {
+        return false;
+    }
+    let Ok(sig) = Signature::from_slice(signature) else {
+        return false;
+    };
+    vk.verify_strict(message, &sig).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +78,18 @@ mod tests {
         let mut sig = sk.sign(b"msg").to_bytes();
         sig[0] ^= 0x01;
         assert!(!verify(&pk, b"msg", &sig));
+    }
+
+    #[test]
+    fn strict_verify_accepts_a_good_signature_and_refuses_a_weak_key() {
+        let sk = fixed_key();
+        let pk = sk.verifying_key().to_bytes();
+        let sig = sk.sign(b"header").to_bytes();
+        assert!(verify_strict(&pk, b"header", &sig));
+        assert!(!verify_strict(&pk, b"other", &sig));
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        assert!(!verify_strict(&identity, b"header", &sig));
     }
 
     #[test]

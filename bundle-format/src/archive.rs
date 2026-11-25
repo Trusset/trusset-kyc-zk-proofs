@@ -57,6 +57,13 @@ pub struct ArchivedSubject {
         skip_serializing_if = "Option::is_none"
     )]
     pub secrets_enc: Option<String>,
+    /// v3.1: the signed header, as structured JSON. Absent for earlier
+    /// bundles, which keeps their archives byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<crate::header::DisclosureHeader>,
+    /// v3.1: base64 of `header.sig`.
+    #[serde(rename = "headerSig", default, skip_serializing_if = "Option::is_none")]
+    pub header_sig: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -418,6 +425,7 @@ mod tests {
             unpinned_epoch: None,
             issuer: Some(issuer()),
             toolchain: None,
+            chain: None,
         }
     }
 
@@ -438,6 +446,8 @@ mod tests {
                 kyc_hash_hex: format!("0x{}", "cd".repeat(32)),
                 proofs: BTreeMap::new(),
                 secrets_enc: None,
+                header: None,
+                header_sig: None,
             }],
             list_registries: BTreeMap::new(),
             list_registry_signatures: BTreeMap::new(),

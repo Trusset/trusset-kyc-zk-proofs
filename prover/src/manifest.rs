@@ -11,10 +11,10 @@ use crate::dispatch::ProvedLeaf;
 use crate::job::{Job, JobSubject, ListCommitment};
 use std::collections::BTreeMap;
 use trusset_bundle_format::manifest::{
-    LeafEntry, ListEntry, Manifest, StarkBlock, ToolchainBlock, CREATED_AT_SENTINEL,
-    MANIFEST_VERSION, MODE_PRODUCTION, MODE_STUB, SECRETS_KDF_VERSION,
+    is_v31, is_v3_family, LeafEntry, ListEntry, Manifest, StarkBlock, ToolchainBlock,
+    CREATED_AT_SENTINEL, MODE_PRODUCTION, MODE_STUB, SECRETS_KDF_VERSION,
 };
-use trusset_bundle_format::merkle::MERKLE_VERSION_V2;
+use trusset_bundle_format::merkle::{MERKLE_VERSION_V2, MERKLE_VERSION_V3};
 use trusset_circuits_common::{digest_to_hex, CIRCUITS_VERSION};
 
 // Re-exports so existing call sites keep working.
@@ -91,7 +91,8 @@ pub fn build_manifest(
     // still declares 2.0.0 or 2.1.0 produces exactly the manifest that
     // version always produced, so an operator can upgrade the tool without
     // their bundle shape changing under them.
-    let emitting_v3 = job.version == MANIFEST_VERSION;
+    let emitting_v3 = is_v3_family(&job.version);
+    let emitting_v31 = is_v31(&job.version);
 
     Manifest {
         version: job.version.clone(),
@@ -107,7 +108,11 @@ pub fn build_manifest(
         passthrough: subject.passthrough.clone(),
         lists,
         secrets_kdf_version: SECRETS_KDF_VERSION,
-        merkle_version: Some(MERKLE_VERSION_V2),
+        merkle_version: Some(if emitting_v31 {
+            MERKLE_VERSION_V3
+        } else {
+            MERKLE_VERSION_V2
+        }),
         config_hash: Some(config_hash_hex.to_string()),
         epoch_days_source: if emitting_v3 {
             job.epoch_days_source.clone()
@@ -134,5 +139,10 @@ pub fn build_manifest(
             None
         },
         toolchain: if emitting_v3 { toolchain } else { None },
+        chain: if emitting_v31 {
+            job.chain.clone()
+        } else {
+            None
+        },
     }
 }

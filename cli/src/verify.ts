@@ -60,6 +60,34 @@ export interface TemporalReport {
   epoch_days_source: string | null;
 }
 
+export interface AttestationFile {
+  version: string;
+  subject: string;
+  root: string;
+  investorClass: number;
+  predicates: string;
+  predicateNames: string[];
+  softExpiry: number;
+  hardExpiry: number;
+  attester: string;
+  chainId: number;
+  hub: string;
+  keyId: number;
+}
+
+/** v3.1: the signed header and the attestation the bundle supports. */
+export interface HeaderReport {
+  present: boolean;
+  signature_valid: boolean;
+  consistent: boolean;
+  reason: string | null;
+  attester: string | null;
+  chain_id: number | null;
+  hub: string | null;
+  key_id: number | null;
+  attestation: AttestationFile | null;
+}
+
 export interface VerifyReport {
   wallet_address: string;
   kyc_hash: string;
@@ -77,6 +105,8 @@ export interface VerifyReport {
   overall_pass: boolean;
   issuer: IssuerReport | null;
   temporal: TemporalReport;
+  /** v3.1 only; null for earlier bundles. */
+  header: HeaderReport | null;
 }
 
 export interface VerifyInvocation {
@@ -195,7 +225,7 @@ export function formatHumanReport(report: VerifyReport, source?: string): string
   lines.push(
     report.issuer
       ? `Issuer:    ${report.issuer.name} (${report.issuer.identifier_scheme}:${report.issuer.identifier}, ${report.issuer.jurisdiction})  key ${report.issuer.key_id}`
-      : 'Issuer:    (not recorded — pre-v3 bundle)',
+      : 'Issuer:    (not recorded, pre-v3 bundle)',
   );
   lines.push('');
   lines.push(`  layout_ok:              ${check(report.layout_ok)}`);
@@ -204,6 +234,21 @@ export function formatHumanReport(report: VerifyReport, source?: string): string
   lines.push(`  signature_valid:        ${anchorCheck(usedKey, report.signature_valid)}`);
   lines.push(`  root_anchor_valid:      ${anchorCheck(usedRoot, report.root_anchor_valid)}`);
   lines.push(`  merkle_root_valid:      ${check(report.merkle_root_valid)}`);
+  const h = report.header;
+  if (h) {
+    lines.push(`  header_present:         ${check(h.present)}`);
+    lines.push(`  header_consistent:      ${check(h.consistent)}`);
+    lines.push(`  header_signature_valid: ${anchorCheck(usedKey, h.signature_valid)}`);
+    if (h.attester) {
+      lines.push(`  attestation:            attester ${h.attester} on chain ${h.chain_id} (hub ${h.hub}, key ${h.key_id})`);
+    }
+    if (h.attestation) {
+      lines.push(
+        `                          class ${h.attestation.investorClass}, predicates ${h.attestation.predicates} [${h.attestation.predicateNames.join(', ')}]`,
+      );
+    }
+    if (h.reason) lines.push(`  header_reason:          ${h.reason}`);
+  }
   lines.push('');
 
   const t = report.temporal;
@@ -231,7 +276,7 @@ export function formatHumanReport(report: VerifyReport, source?: string): string
     lines.push(`  ${mark} ${leaf.field.padEnd(24)} ${leaf.circuit.padEnd(20)}${reason}`);
     const c = leaf.claim;
     if (c) {
-      lines.push(`        claim    ${c.legal_basis} / ${c.legal_reference} — ${c.assertion}`);
+      lines.push(`        claim    ${c.legal_basis} / ${c.legal_reference}: ${c.assertion}`);
       lines.push(`        evidence ${c.evidence_class}   warranted by ${c.issuing_party} (${c.issuing_party_identifier})`);
       lines.push(
         `        valid    ${c.validity_from_date} .. ${c.validity_until_date ?? 'open-ended'}   evidence examined ${c.basis_as_of_date}`,
@@ -240,7 +285,7 @@ export function formatHumanReport(report: VerifyReport, source?: string): string
         const resolved =
           c.list_resolved === true
             ? `resolved, ${c.list_entry_count ?? '?'} entries`
-            : 'NOT RESOLVED — no registry for this root was supplied';
+            : 'NOT RESOLVED: no registry for this root was supplied';
         lines.push(`        list     ${c.list_id} v${c.list_version} (${resolved})`);
       }
       lines.push(`        status   ${c.status === 'effective' ? '[ok]' : '[!!]'} ${c.status}`);

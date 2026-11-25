@@ -1,0 +1,61 @@
+{
+  "header": {
+    "attester": "0x1111111111111111111111111111111111111111",
+    "chainId": 11155111,
+    "epochDays": 20776,
+    "hub": "0x2222222222222222222222222222222222222222",
+    "keyId": 1,
+    "leafCount": 5,
+    "merkleVersion": 3,
+    "root": "0x744025bd383f75bfbd5b55504233c87acc27aea55707efb3cf865752e71cc7ab",
+    "version": "3.1.0",
+    "wallet": "0xabcdef0123456789abcdef0123456789abcdef01"
+  },
+  "headerSignature": "0x1344dea51d3f678e8308d9bdae1071af766c822a1a93b0a84bb04a37d527275a2ae61d21ce5d37b4341c0bc4c1c54f07defe4700f9072265ffff55b12746d906",
+  "leaf": {
+    "binding": {
+      "descriptor": {
+        "evidenceClass": "DOCUMENTARY",
+        "issuingParty": {
+          "identifier": "529900T8BM49AURSDO55",
+          "identifierScheme": "LEI",
+          "jurisdiction": "DE",
+          "name": "Example Bank AG"
+        },
+        "legalBasis": {
+          "assertion": "Subject given name as recorded at onboarding",
+          "framework": "AMLD5",
+          "reference": "Art. 13(1)(a), customer identification"
+        }
+      },
+      "validity": {
+        "basisAsOf": 20776,
+        "from": 20776,
+        "until": 21140
+      }
+    },
+    "bindingDigest": "0xfbc790dc6864ab6ab3d00c09913d1debe0ab4556116f2e983828d65fa4744cbb",
+    "circuit": "preimage_knowledge",
+    "circuitId": 4,
+    "commitment": "0xcd9621d69ce7cc6df387bfc1d0c6798b09c287eedebe5da35f679b5770cd9b1f",
+    "disclosure": "commitment_only",
+    "fieldName": "firstName",
+    "leafHash": "0xb1dcbe6825a138325204ae364d95f055263b355d29ba904b200620b33e383757",
+    "params": {
+      "maxValueBytes": 128
+    },
+    "paramsHash": "0xb193f1053e91e8b367d8cc002673d6fc1279b1fcffcbfc603bf0ad68e9e7921a",
+    "proofDigest": "0x9f217d54845fd6a91843c3a56eacb50f9cd105f4eea6f59123f8bd2d963fc400",
+    "proofPath": "proofs/firstName.bin",
+    "publicDigest": "0x934591b478c481965c641bb53f84a4d6819bf709a8bd494139380e0333955339",
+    "publicInputs": {
+      "commitment": "0xcd9621d69ce7cc6df387bfc1d0c6798b09c287eedebe5da35f679b5770cd9b1f"
+    }
+  },
+  "path": [
+    "0xa1396aa37212b6a085be872da1f3df25c230860600102f3b376c5a7fff02cd06",
+    "0xcea83e8f1e736880d9cfb55cde012e9ccdb99982ed7e600a32916337dc60b34d",
+    "0x4198ba7eddb8abef312cf2c27411ef85d335ab504d3598d2de7dc5d8d45a7170"
+  ],
+  "version": "3.1.0"
+}

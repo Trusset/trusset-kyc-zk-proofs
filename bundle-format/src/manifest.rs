@@ -22,7 +22,32 @@ use std::collections::BTreeMap;
 /// independent of wall-clock time (plan §"Determinism").
 pub const CREATED_AT_SENTINEL: &str = "1970-01-01T00:00:00Z";
 
+/// The 3.0.0 wire version. Kept under this name for existing callers; a
+/// job or manifest in the v3 family is recognised with [`is_v3_family`].
 pub const MANIFEST_VERSION: &str = "3.0.0";
+
+/// The 3.0.0 wire version, named explicitly.
+pub const MANIFEST_VERSION_V300: &str = MANIFEST_VERSION;
+
+/// v3.1.0: no clear-text personal values, Merkle v3 with inclusion paths, a
+/// signed header bound to one on-chain attestation, and per-leaf predicates.
+pub const MANIFEST_VERSION_V310: &str = "3.1.0";
+
+/// The newest wire version this build emits.
+pub const LATEST_MANIFEST_VERSION: &str = MANIFEST_VERSION_V310;
+
+/// True for 3.0.0 and 3.1.0, the versions that carry claim descriptors,
+/// validity intervals, an issuer block, and a toolchain block.
+#[must_use]
+pub fn is_v3_family(version: &str) -> bool {
+    version == MANIFEST_VERSION_V300 || version == MANIFEST_VERSION_V310
+}
+
+/// True for 3.1.0.
+#[must_use]
+pub fn is_v31(version: &str) -> bool {
+    version == MANIFEST_VERSION_V310
+}
 
 /// Prior manifest version still accepted on the verify path. Bundles
 /// produced by v2.0.0 tooling parse into the same struct (every later
@@ -34,17 +59,19 @@ pub const MANIFEST_VERSION_V200: &str = "2.0.0";
 pub const MANIFEST_VERSION_V210: &str = "2.1.0";
 
 /// Manifest versions the verify path accepts.
-pub const ACCEPTED_MANIFEST_VERSIONS: [&str; 3] = [
+pub const ACCEPTED_MANIFEST_VERSIONS: [&str; 4] = [
     MANIFEST_VERSION_V200,
     MANIFEST_VERSION_V210,
-    MANIFEST_VERSION,
+    MANIFEST_VERSION_V300,
+    MANIFEST_VERSION_V310,
 ];
 
 /// Job-spec versions the prover accepts on stdin.
-pub const ACCEPTED_JOB_VERSIONS: [&str; 3] = [
+pub const ACCEPTED_JOB_VERSIONS: [&str; 4] = [
     MANIFEST_VERSION_V200,
     MANIFEST_VERSION_V210,
-    MANIFEST_VERSION,
+    MANIFEST_VERSION_V300,
+    MANIFEST_VERSION_V310,
 ];
 
 /// Per-leaf disclosure classes (v2.1, optional field `disclosure`).
@@ -188,6 +215,24 @@ pub struct IssuerBlock {
     pub key_id: String,
 }
 
+/// v3.1: the on-chain attestation a bundle belongs to. The same four values
+/// are in the signed header; recording them in the manifest makes the
+/// manifest signature cover them too.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ChainBinding {
+    /// EVM address that writes the attestation on the hub, `0x` + 40 hex.
+    pub attester: String,
+    #[serde(rename = "chainId")]
+    pub chain_id: u64,
+    /// `IdentityHub` address, `0x` + 40 hex.
+    pub hub: String,
+    /// The hub's id for the operator key that signs this bundle
+    /// (`operatorKeyAt(attester, keyId)`).
+    #[serde(rename = "keyId")]
+    pub key_id: u32,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ListEntry {
     pub root: String,
@@ -262,6 +307,10 @@ pub struct Manifest {
     /// v3: the build that produced this bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toolchain: Option<ToolchainBlock>,
+    /// v3.1: the attester, chain, hub, and hub key id this bundle is issued
+    /// under. Required for 3.1.0, absent before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<ChainBinding>,
 }
 
 /// Whether a manifest's `proofPath` is safe to join onto a directory.
@@ -356,6 +405,7 @@ mod tests {
             unpinned_epoch: None,
             issuer: None,
             toolchain: None,
+            chain: None,
         }
     }
 
@@ -456,7 +506,11 @@ mod tests {
         assert!(ACCEPTED_MANIFEST_VERSIONS.contains(&"2.0.0"));
         assert!(ACCEPTED_MANIFEST_VERSIONS.contains(&"2.1.0"));
         assert!(ACCEPTED_MANIFEST_VERSIONS.contains(&"3.0.0"));
+        assert!(ACCEPTED_MANIFEST_VERSIONS.contains(&"3.1.0"));
         assert_eq!(MANIFEST_VERSION, "3.0.0");
+        assert_eq!(LATEST_MANIFEST_VERSION, "3.1.0");
+        assert!(is_v3_family("3.0.0") && is_v3_family("3.1.0") && !is_v3_family("2.1.0"));
+        assert!(is_v31("3.1.0") && !is_v31("3.0.0"));
     }
 
     /// A v2 manifest must round-trip with none of the v3 keys appearing, or
@@ -474,6 +528,7 @@ mod tests {
             "toolchain",
             "binding",
             "bindingDigest",
+            "chain",
         ] {
             assert!(
                 !text.contains(key),

@@ -26,7 +26,11 @@ export interface PreimageParams {
 }
 
 export interface TierParams {
-  minTier: InvestorTypeName | number;
+  /**
+   * A fixed tier floor, or `ATTESTED` (3.1.0): the subject's own investor
+   * class, so the leaf proves exactly the class the hub attestation records.
+   */
+  minTier: InvestorTypeName | number | 'ATTESTED';
 }
 
 export interface AgeParams {
@@ -46,6 +50,19 @@ export interface SetMembershipParams {
 export interface PredicateClaimFields {
   descriptor?: DescriptorConfig;
   validity?: ValidityConfig;
+  /**
+   * 3.1.0: the hub predicate this leaf proves (`ADULT`, `EEA_RESIDENT`,
+   * `RESIDENCY_ON_FILE`, `CITIZENSHIP_ON_FILE`, `TAX_RESIDENCY_ON_FILE`,
+   * `ACCREDITED`, or `INVESTOR_CLASS`). Bound into the leaf hash.
+   */
+  predicate?: string;
+  /**
+   * 3.1.0: when the subject's value does not satisfy the predicate, leave the
+   * leaf out (the attestation then lacks that bit) instead of failing the
+   * subject. For predicates such as `EEA_RESIDENT` that many valid subjects
+   * do not meet.
+   */
+  optional?: boolean;
 }
 
 export type PredicateSpec = PredicateClaimFields &
@@ -110,6 +127,27 @@ export interface OutputConfig {
 
 export type EpochDaysSource = 'utc_today' | `fixed:${number}` | `env:${string}`;
 
+/**
+ * Where the operator keys live. `file`: an encrypted key file (scrypt plus
+ * ChaCha20-Poly1305) unlocked with a passphrase. `keychain`: the macOS
+ * keychain. Absent: the `TRUSSET_KYC_*` environment variables, for CI only.
+ */
+export type KeyStoreConfig =
+  | { type: 'file'; path: string }
+  | { type: 'keychain'; service?: string; account?: string };
+
+/**
+ * 3.1.0: the on-chain attestation every bundle is bound to. `keyId` is the
+ * hub's id for the operator key (`operatorKeyAt(attester, keyId)`), 1 for an
+ * attester's first key.
+ */
+export interface ChainConfig {
+  chainId: number;
+  hub: string;
+  attester: string;
+  keyId: number;
+}
+
 export interface SecurityConfig {
   clearInputAfterProcessing: boolean;
   /** v2 always uses Rescue-Prime; v1's `hashAlgorithm` is honored for backwards-readability with a deprecation warning. */
@@ -119,6 +157,8 @@ export interface SecurityConfig {
   deterministic?: boolean;
   /** v3: root of the append-only registries. Default `config/registry`. */
   registryDir?: string;
+  /** v3.1: where the operator keys are kept. */
+  keyStore?: KeyStoreConfig;
 }
 
 export interface ManifestConfig {
@@ -165,6 +205,8 @@ export interface Config {
   manifest?: ManifestConfig;
   /** v3: defaults applied to every predicate's claim descriptor. */
   claims?: ClaimsConfig;
+  /** v3.1: the hub attestation the bundles are issued for. */
+  chain?: ChainConfig;
 }
 
 // =================== KYC record ===================
@@ -177,7 +219,8 @@ export type KycRecord = Record<string, KycFieldValue>;
 export interface IndexRow {
   index?: number;
   walletAddress: string;
-  country: string;
+  /** Absent from 3.1.0 index files: no clear-text personal values. */
+  country?: string;
   investorType: InvestorTypeName;
   softExpiryDays: number;
   hardExpiryDays: number;

@@ -24,6 +24,13 @@
 //! Verifying from `--archive` needs nothing but the file: the archive carries
 //! the bundles, the list versions their proofs were made against, the root
 //! history, and the revocation log.
+//!
+//! `--disclosure <FILE>` checks one v3.1 disclosed leaf on its own:
+//!
+//! ```text
+//! trusset-verifier-cli --disclosure disclosures/dateOfBirth.json \
+//!   [--proof proofs/dateOfBirth.bin] --public-key <64-hex> [--wallet <0xADDR>]
+//! ```
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,7 +38,7 @@ use std::process::ExitCode;
 use trusset_bundle_format::archive::{decode_b64, Archive};
 use trusset_bundle_format::registry::{ListRegistry, RevocationLog, RootHistory};
 use trusset_verifier::{
-    bundle, verify_bundle, verify_loaded, AsOf, TemporalContext, VerifyAnchors, VerifyOptions,
+    bundle, v31, verify_bundle, verify_loaded, AsOf, TemporalContext, VerifyAnchors, VerifyOptions,
     VerifyReport,
 };
 
@@ -43,6 +50,10 @@ Source (exactly one required):
   --archive <FILE>         A .tka archive; self-contained, needs nothing else
   --subject <0xADDR>       Which subject to verify from an archive
                            (default: every subject in it)
+  --disclosure <FILE>      One v3.1 disclosed leaf (`disclosures/<leaf>.json`);
+                           needs --public-key
+  --proof <FILE>           Its proof (default: ../proofs/<leaf>.bin next to it)
+  --wallet <0xADDR>        Wallet the disclosure must name (optional)
 
 Anchors (at least one required):
   --public-key <HEX>       Operator's 32-byte ed25519 public key, hex
@@ -72,6 +83,9 @@ Exit codes:
 ";
 
 struct Args {
+    disclosure: Option<PathBuf>,
+    proof: Option<PathBuf>,
+    wallet: Option<String>,
     bundle: Option<PathBuf>,
     archive: Option<PathBuf>,
     subject: Option<String>,
@@ -88,6 +102,9 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut iter = std::env::args().skip(1);
+    let mut disclosure: Option<PathBuf> = None;
+    let mut proof: Option<PathBuf> = None;
+    let mut wallet: Option<String> = None;
     let mut bundle: Option<PathBuf> = None;
     let mut archive: Option<PathBuf> = None;
     let mut subject: Option<String> = None;
@@ -106,6 +123,24 @@ fn parse_args() -> Result<Args, String> {
             "--help" | "-h" => {
                 print!("{}", USAGE);
                 std::process::exit(0);
+            }
+            "--disclosure" => {
+                disclosure = Some(PathBuf::from(
+                    iter.next()
+                        .ok_or_else(|| "--disclosure requires a path".to_string())?,
+                ));
+            }
+            "--proof" => {
+                proof = Some(PathBuf::from(
+                    iter.next()
+                        .ok_or_else(|| "--proof requires a path".to_string())?,
+                ));
+            }
+            "--wallet" => {
+                wallet = Some(
+                    iter.next()
+                        .ok_or_else(|| "--wallet requires an address".to_string())?,
+                );
             }
             "--bundle" => {
                 bundle = Some(PathBuf::from(
@@ -183,7 +218,20 @@ fn parse_args() -> Result<Args, String> {
         }
     }
 
-    if bundle.is_none() && archive.is_none() {
+    if disclosure.is_some() {
+        if bundle.is_some() || archive.is_some() {
+            return Err(
+                "--disclosure checks one leaf on its own; drop --bundle/--archive".to_string(),
+            );
+        }
+        if public_key_hex.is_none() {
+            return Err(
+                "--disclosure needs --public-key: the header signature is what binds the leaf to \
+                 its issuer"
+                    .to_string(),
+            );
+        }
+    } else if bundle.is_none() && archive.is_none() {
         return Err("one of --bundle <DIR> or --archive <FILE> is required".to_string());
     }
     if bundle.is_some() && archive.is_some() {
@@ -216,6 +264,9 @@ fn parse_args() -> Result<Args, String> {
         None => None,
     };
     Ok(Args {
+        disclosure,
+        proof,
+        wallet,
         bundle,
         archive,
         subject,
@@ -379,6 +430,10 @@ fn main() -> ExitCode {
         }
     };
 
+    if let Some(path) = args.disclosure.as_ref() {
+        return run_disclosure(path, &args);
+    }
+
     let now_epoch_days = args.now.unwrap_or_else(today_epoch_days);
     let as_of = build_as_of(&args);
 
@@ -497,9 +552,23 @@ fn verify_from_archive(
                     .ok_or_else(|| format!("{}: {} is not valid base64", subject.subject_id, p))?,
             );
         }
-        let loaded =
-            bundle::loaded_from_parts(&manifest_bytes, &subject.kyc_hash_hex, signature, proofs)
-                .map_err(|e| format!("{}: {}", subject.subject_id, e))?;
+        let header_bytes = match subject.header.as_ref() {
+            Some(h) => Some(
+                h.to_json_bytes()
+                    .map_err(|e| format!("{}: header: {}", subject.subject_id, e))?,
+            ),
+            None => None,
+        };
+        let header_sig = subject.header_sig.as_deref().and_then(decode_b64);
+        let loaded = bundle::loaded_from_parts_with_header(
+            &manifest_bytes,
+            &subject.kyc_hash_hex,
+            signature,
+            proofs,
+            header_bytes,
+            header_sig,
+        )
+        .map_err(|e| format!("{}: {}", subject.subject_id, e))?;
 
         let opts = VerifyOptions {
             anchors: VerifyAnchors {
@@ -517,6 +586,125 @@ fn verify_from_archive(
         ));
     }
     Ok(out)
+}
+
+/// `--disclosure`: check one v3.1 leaf with nothing but its file, its proof,
+/// and the operator key.
+fn run_disclosure(path: &Path, args: &Args) -> ExitCode {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!(
+                "trusset-verifier-cli: cannot read {}: {}",
+                path.display(),
+                e
+            );
+            return ExitCode::from(66);
+        }
+    };
+    let proof_path = match args.proof.clone() {
+        Some(p) => p,
+        None => {
+            let leaf_name = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| {
+                    v.get("leaf")
+                        .and_then(|l| l.get("proofPath"))
+                        .and_then(|p| p.as_str())
+                        .map(str::to_string)
+                });
+            match leaf_name {
+                Some(p) if trusset_bundle_format::manifest::is_safe_proof_path(&p) => path
+                    .parent()
+                    .and_then(Path::parent)
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(p),
+                _ => {
+                    eprintln!("trusset-verifier-cli: cannot locate the proof; pass --proof <FILE>");
+                    return ExitCode::from(64);
+                }
+            }
+        }
+    };
+    let proof = match std::fs::read(&proof_path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!(
+                "trusset-verifier-cli: cannot read {}: {}",
+                proof_path.display(),
+                e
+            );
+            return ExitCode::from(66);
+        }
+    };
+    let pk = args.public_key.expect("checked in parse_args");
+    let report = v31::verify_disclosure(&bytes, &proof, &pk, args.wallet.as_deref());
+    if args.json {
+        match serde_json::to_string_pretty(&report) {
+            Ok(j) => println!("{}", j),
+            Err(e) => {
+                eprintln!("trusset-verifier-cli: json: {}", e);
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        println!("Disclosure: {}", path.display());
+        println!("Proof:      {}", proof_path.display());
+        if let Some(h) = &report.header {
+            println!("Wallet:     {}", h.wallet);
+            println!("Root:       {}", h.root);
+            println!(
+                "Attester:   {} on chain {} (hub {}, key {})",
+                h.attester, h.chain_id, h.hub, h.key_id
+            );
+        }
+        println!(
+            "Leaf:       {} ({}){}",
+            report.field.as_deref().unwrap_or("?"),
+            report.circuit.as_deref().unwrap_or("?"),
+            report
+                .predicate
+                .as_deref()
+                .map(|p| format!(", proves {}", p))
+                .unwrap_or_default()
+        );
+        println!();
+        println!(
+            "  header_signature_valid:  {}",
+            check_mark(report.header_signature_valid)
+        );
+        println!(
+            "  wallet_matches:          {}",
+            check_mark(report.wallet_matches)
+        );
+        println!(
+            "  leaf_valid:              {}",
+            check_mark(report.leaf_valid)
+        );
+        println!(
+            "  leaf_hash_valid:         {}",
+            check_mark(report.leaf_hash_valid)
+        );
+        println!(
+            "  inclusion_valid:         {}",
+            check_mark(report.inclusion_valid)
+        );
+        println!(
+            "  stark_valid:             {} ({})",
+            check_mark(report.stark_valid),
+            report.stark
+        );
+        println!();
+        match &report.reason {
+            None => println!("Verifies: PASS"),
+            Some(r) => println!("Verifies: FAIL ({})", r),
+        }
+    }
+    if report.ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    }
 }
 
 fn print_human(source: &str, report: &VerifyReport, used_key: bool, used_root: bool) {
@@ -563,6 +751,33 @@ fn print_human(source: &str, report: &VerifyReport, used_key: bool, used_root: b
         "  merkle_root_valid:       {}",
         check_mark(report.merkle_root_valid)
     );
+    if let Some(h) = &report.header {
+        println!("  header_present:          {}", check_mark(h.present));
+        println!("  header_consistent:       {}", check_mark(h.consistent));
+        println!(
+            "  header_signature_valid:  {}",
+            anchor_mark(used_key, h.signature_valid)
+        );
+        if let (Some(att), Some(chain), Some(hub), Some(key)) =
+            (h.attester.as_ref(), h.chain_id, h.hub.as_ref(), h.key_id)
+        {
+            println!(
+                "  attestation:             attester {} on chain {} (hub {}, key {})",
+                att, chain, hub, key
+            );
+        }
+        if let Some(a) = &h.attestation {
+            println!(
+                "                           class {}, predicates {} [{}]",
+                a.investor_class,
+                a.predicates,
+                a.predicate_names.join(", ")
+            );
+        }
+        if let Some(r) = &h.reason {
+            println!("  header_reason:           {}", r);
+        }
+    }
     println!();
 
     let t = &report.temporal;

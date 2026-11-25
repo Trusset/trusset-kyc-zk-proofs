@@ -99,6 +99,7 @@ fn fixture_job(output_root: &str) -> Job {
         unpinned_epoch: false,
         issuer: Some(issuer()),
         dry_run: false,
+        chain: None,
         subjects: vec![JobSubject {
             subject_id: WALLET.into(),
             passthrough: serde_json::json!({}),
@@ -136,6 +137,7 @@ fn fixture_job(output_root: &str) -> Job {
                     root,
                     content_hash: list_content_hash(&list_values()),
                 }),
+                predicate: None,
             }],
         }],
         list_commitments: lists,
@@ -259,6 +261,8 @@ fn build_archive(with_revocation: bool) -> Built {
             kyc_hash_hex: kyc_hash_hex.trim().to_string(),
             proofs,
             secrets_enc: None,
+            header: None,
+            header_sig: None,
         }],
         list_registries: BTreeMap::from([("country_allowlist".to_string(), reg)]),
         list_registry_signatures: BTreeMap::from([(

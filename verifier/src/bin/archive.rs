@@ -304,6 +304,19 @@ fn cmd_build(o: &Options) -> Result<(), String> {
             None
         };
 
+        let (header, header_sig) = if trusset_bundle_format::manifest::is_v31(&manifest.version) {
+            let header_bytes = std::fs::read(dir.join("header.json"))
+                .map_err(|e| format!("{}: header.json: {}", dir.display(), e))?;
+            let header: trusset_bundle_format::header::DisclosureHeader =
+                serde_json::from_slice(&header_bytes)
+                    .map_err(|e| format!("{}: header.json: {}", dir.display(), e))?;
+            let sig = std::fs::read(dir.join("header.sig"))
+                .map_err(|e| format!("{}: header.sig: {}", dir.display(), e))?;
+            (Some(header), Some(encode_b64(&sig)))
+        } else {
+            (None, None)
+        };
+
         subjects.push(ArchivedSubject {
             subject_id: manifest.wallet_address.clone(),
             manifest_sha256: sha256_hex(&manifest_bytes),
@@ -312,6 +325,8 @@ fn cmd_build(o: &Options) -> Result<(), String> {
             kyc_hash_hex: kyc_hash_hex.trim().to_string(),
             proofs,
             secrets_enc,
+            header,
+            header_sig,
         });
     }
 

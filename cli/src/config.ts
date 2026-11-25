@@ -22,13 +22,16 @@ import {
   ListVersionRecord,
 } from './registry';
 import { validateIssuer } from './descriptors';
+import { isAddress } from './address';
 import {
+  ChainConfig,
   CircuitName,
   ClaimsConfig,
   Config,
   Disclosure,
   EpochDaysSource,
   IssuerConfig,
+  KeyStoreConfig,
   ListsEntry,
   PredicateEntry,
   PredicateInstance,
@@ -37,9 +40,34 @@ import {
   TierMap,
 } from './types';
 
-/** The manifest wire version this build emits unless the config pins another. */
+/**
+ * The manifest wire version used when config.json names none. Stays 3.0.0 so
+ * an existing config keeps producing the bundles it always did; `npm run init`
+ * writes 3.1.0 explicitly.
+ */
 export const DEFAULT_MANIFEST_VERSION = '3.0.0';
-export const SUPPORTED_MANIFEST_VERSIONS = ['2.0.0', '2.1.0', '3.0.0'];
+export const SUPPORTED_MANIFEST_VERSIONS = ['2.0.0', '2.1.0', '3.0.0', '3.1.0'];
+
+/** 3.0.0 and 3.1.0: claim descriptors, validity, issuer and toolchain blocks. */
+export function isV3Family(version: string): boolean {
+  return version === '3.0.0' || version === '3.1.0';
+}
+
+/** 3.1.0: no clear text, Merkle v3, signed header, hub-bound predicates. */
+export function isV31(version: string): boolean {
+  return version === '3.1.0';
+}
+
+/** Predicates a 3.1.0 leaf may name. The rest of the hub table are the attester's own statements. */
+export const LEAF_PREDICATES = [
+  'ADULT',
+  'EEA_RESIDENT',
+  'RESIDENCY_ON_FILE',
+  'CITIZENSHIP_ON_FILE',
+  'TAX_RESIDENCY_ON_FILE',
+  'ACCREDITED',
+  'INVESTOR_CLASS',
+];
 
 const CONFIG_PATH = path.join(process.cwd(), 'config.json');
 
@@ -106,6 +134,10 @@ export interface ResolvedConfig {
   unpinnedEpoch: boolean;
   /** Input column carrying a per-subject evidence date, if configured. */
   evidenceDateField: string;
+  /** 3.1.0: the hub attestation the bundles are bound to. */
+  chain?: ChainConfig;
+  /** Where the operator keys are kept; absent means environment variables (CI). */
+  keyStore?: KeyStoreConfig;
 }
 
 export interface ResolveOptions {
@@ -169,7 +201,8 @@ export function resolveConfig(raw: Config, opts: ResolveOptions = {}): ResolvedC
 
   const tiers = mergeTiers(raw.tiers);
   const predicates = resolvePredicates(raw);
-  const instances = resolveInstances(raw, tiers);
+  const versionForInstances = raw.manifest?.version ?? DEFAULT_MANIFEST_VERSION;
+  const instances = resolveInstances(raw, tiers, versionForInstances);
 
   const masterKeyEnv = raw.security.masterKeyEnv || 'TRUSSET_KYC_MASTER_KEY';
   const signingKeyEnv = raw.manifest?.signingKeyEnv || 'TRUSSET_KYC_SIGNING_KEY';
@@ -186,14 +219,18 @@ export function resolveConfig(raw: Config, opts: ResolveOptions = {}): ResolvedC
   const { epochDays, unpinnedEpoch } = resolveEpochDays(epochDaysSource, opts);
 
   const issuer = raw.manifest?.issuer;
-  if (manifestVersion === '3.0.0') {
+  if (isV3Family(manifestVersion)) {
     if (!issuer) {
       throw new Error(
-        'manifest.issuer: missing.\n  A version 3.0.0 bundle records the party legally responsible for its assertions; without it the bundle says what was proved but not who stands behind it.\n  Fix: run `npm run init` to configure it, or set manifest.version to "2.1.0" to keep emitting the previous bundle shape.',
+        'manifest.issuer: missing.\n  A version 3.x bundle records the party legally responsible for its assertions; without it the bundle says what was proved but not who stands behind it.\n  Fix: run `npm run init` to configure it, or set manifest.version to "2.1.0" to keep emitting the previous bundle shape.',
       );
     }
     validateIssuer(issuer);
   }
+
+  const chain = isV31(manifestVersion) ? validateChain(raw.chain) : undefined;
+  if (isV31(manifestVersion)) validateV31Predicates(instances);
+  const keyStore = validateKeyStore(raw.security.keyStore);
 
   const registryDir = registryRoot(raw.security.registryDir);
   const lists = resolveLists(raw, instances, registryDir, epochDays, manifestVersion);
@@ -219,7 +256,92 @@ export function resolveConfig(raw: Config, opts: ResolveOptions = {}): ResolvedC
     epochDays,
     unpinnedEpoch,
     evidenceDateField,
+    chain,
+    keyStore,
   };
+}
+
+/** A 3.1.0 config must name a real attester and hub on a real chain. */
+export function validateChain(chain: ChainConfig | undefined): ChainConfig {
+  const fix =
+    '  Fix: set "chain": { "chainId": <n>, "hub": "0x...", "attester": "0x...", "keyId": 1 } in config.json.\n' +
+    '  attester is the wallet that attests on the hub; keyId is the hub id of your operator key (1 for the first).';
+  if (!chain) {
+    throw new Error(
+      `chain: missing.\n  A 3.1.0 bundle is bound to one on-chain attestation: the attester, the chain, and the IdentityHub.\n${fix}`,
+    );
+  }
+  const zero = /^0x0{40}$/i;
+  for (const key of ['hub', 'attester'] as const) {
+    const v = chain[key];
+    if (typeof v !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(v) || zero.test(v)) {
+      throw new Error(`chain.${key}: "${String(v)}" is not a non-zero 0x + 40 hex address.\n${fix}`);
+    }
+    if (!isAddress(v)) {
+      throw new Error(`chain.${key}: "${v}" has a wrong EIP-55 checksum. Use all lowercase or the correct checksum.`);
+    }
+  }
+  if (!Number.isSafeInteger(chain.chainId) || chain.chainId <= 0) {
+    throw new Error(`chain.chainId: ${String(chain.chainId)} is not a positive integer.\n${fix}`);
+  }
+  if (!Number.isSafeInteger(chain.keyId) || chain.keyId < 1 || chain.keyId > 0xffffffff) {
+    throw new Error(
+      `chain.keyId: ${String(chain.keyId)} is not a hub key id. The hub numbers an attester's operator keys from 1.\n${fix}`,
+    );
+  }
+  return {
+    chainId: chain.chainId,
+    hub: chain.hub.toLowerCase(),
+    attester: chain.attester.toLowerCase(),
+    keyId: chain.keyId,
+  };
+}
+
+/**
+ * The 3.1.0 predicate rules the prover also enforces, checked here so a bad
+ * config fails before any record is read.
+ */
+function validateV31Predicates(instances: ResolvedInstances): void {
+  let classLeaves = 0;
+  for (const inst of instances) {
+    const name = inst.spec.predicate;
+    if (name === undefined) continue;
+    if (!LEAF_PREDICATES.includes(name)) {
+      throw new Error(
+        `predicates.${inst.leafName}.predicate: "${name}" cannot name a leaf. Use one of ${LEAF_PREDICATES.join(', ')}.\n  KYC_DONE, AML_CLEAR, SANCTIONS_CLEAR, PEP_CLEAR, NOT_US_PERSON and CONTRACT_HOLDER are your own statements on the hub; no proof in a bundle stands behind them.`,
+      );
+    }
+    if (name === 'INVESTOR_CLASS') {
+      classLeaves += 1;
+      if (inst.spec.circuit !== 'tier_threshold' || inst.spec.params.minTier !== 'ATTESTED') {
+        throw new Error(
+          `predicates.${inst.leafName}: INVESTOR_CLASS needs { "circuit": "tier_threshold", "params": { "minTier": "ATTESTED" } }, so the leaf proves exactly the class the hub records.`,
+        );
+      }
+      if (inst.spec.optional) {
+        throw new Error(`predicates.${inst.leafName}: the INVESTOR_CLASS leaf cannot be optional.`);
+      }
+    }
+  }
+  if (classLeaves !== 1) {
+    throw new Error(
+      `a 3.1.0 config needs exactly one INVESTOR_CLASS predicate, found ${classLeaves}.\n  Fix: "investorType": { "circuit": "tier_threshold", "params": { "minTier": "ATTESTED" }, "predicate": "INVESTOR_CLASS", ... }`,
+    );
+  }
+}
+
+function validateKeyStore(ks: KeyStoreConfig | undefined): KeyStoreConfig | undefined {
+  if (!ks) return undefined;
+  if (ks.type === 'file') {
+    if (typeof ks.path !== 'string' || !ks.path) {
+      throw new Error('security.keyStore.path: required for a key file, e.g. ".trusset/operator.key"');
+    }
+    return ks;
+  }
+  if (ks.type === 'keychain') return ks;
+  throw new Error(
+    `security.keyStore.type: "${String((ks as { type?: unknown }).type)}" is not "file" or "keychain".`,
+  );
 }
 
 /**
@@ -330,9 +452,10 @@ function mergeTiers(provided?: TierMap): Required<TierMap> {
 /** Fields whose plaintext value is also written to the batch index CSV. */
 const PLAINTEXT_DISCLOSED_FIELDS = new Set(['country', 'investorType']);
 
-function disclosureFor(field: string, spec: PredicateSpec): Disclosure {
+function disclosureFor(field: string, spec: PredicateSpec, version: string): Disclosure {
   if (spec.circuit === 'commitment_only') return 'commitment_only';
-  if (PLAINTEXT_DISCLOSED_FIELDS.has(field)) return 'plaintext';
+  // 3.1.0 carries no clear-text value anywhere, so nothing is `plaintext`.
+  if (PLAINTEXT_DISCLOSED_FIELDS.has(field) && !isV31(version)) return 'plaintext';
   return 'predicate';
 }
 
@@ -364,7 +487,11 @@ const LEAF_NAME_SAFE = /^[A-Za-z0-9_.@-]+$/;
  * a field keeps the bare field name so existing single-predicate bundles
  * are unchanged; later instances get a params-derived suffix.
  */
-export function resolveInstances(c: Config, tiers: Required<TierMap>): ResolvedInstances {
+export function resolveInstances(
+  c: Config,
+  tiers: Required<TierMap>,
+  version: string = c.manifest?.version ?? DEFAULT_MANIFEST_VERSION,
+): ResolvedInstances {
   const explicit = c.predicates ?? {};
   const eligibleFields = new Set<string>(c.mapping.fields);
   if (c.mapping.countryField) eligibleFields.add('country');
@@ -394,11 +521,25 @@ export function resolveInstances(c: Config, tiers: Required<TierMap>): ResolvedI
       }
       if (seen.has(leafName.toLowerCase())) {
         throw new Error(
-          `config.predicates.${field}: duplicate leaf name "${leafName}" — two instances resolve to identical parameters`,
+          `config.predicates.${field}: duplicate leaf name "${leafName}": two instances resolve to identical parameters`,
         );
       }
       seen.add(leafName.toLowerCase());
-      out.push({ field, leafName, spec, disclosure: disclosureFor(field, spec) });
+      if (!isV31(version) && (spec.predicate !== undefined || spec.optional !== undefined)) {
+        throw new Error(
+          `config.predicates.${field}: "predicate" and "optional" are 3.1.0 fields. Set manifest.version to "3.1.0", or remove them.`,
+        );
+      }
+      if (
+        !isV31(version) &&
+        spec.circuit === 'tier_threshold' &&
+        spec.params.minTier === 'ATTESTED'
+      ) {
+        throw new Error(
+          `config.predicates.${field}: minTier "ATTESTED" is a 3.1.0 setting. Set manifest.version to "3.1.0", or name a tier.`,
+        );
+      }
+      out.push({ field, leafName, spec, disclosure: disclosureFor(field, spec, version) });
     });
   }
   out.sort((a, b) => (a.leafName < b.leafName ? -1 : a.leafName > b.leafName ? 1 : 0));
@@ -439,7 +580,7 @@ function resolvePredicates(c: Config): ResolvedPredicates {
   for (const key of Object.keys(explicit)) {
     if (!eligibleFields.has(key)) {
       throw new Error(
-        `config.predicates.${key} references unknown field — not in mapping.fields nor a special (country/investorType) field.`,
+        `config.predicates.${key} references unknown field: not in mapping.fields nor a special (country/investorType) field.`,
       );
     }
   }
@@ -523,7 +664,7 @@ function resolveLists(
         ].join('\n'),
       );
     }
-    if (manifestVersion === '3.0.0') {
+    if (isV3Family(manifestVersion)) {
       console.warn(
         [
           `[config] list "${listId}" resolved from ${entry.path} rather than from the signed registry.`,
@@ -593,7 +734,7 @@ function resolveFromFile(c: Config, listId: string, entry: ListsEntry): Resolved
       : '0x' + entry.sha256.toLowerCase();
     if (actual !== expected) {
       throw new Error(
-        `config.lists.${listId}: pinned SHA-256 mismatch — ${resolvedPath} has changed since it was pinned.\n  Expected ${expected}\n  Found    ${actual}\n  Fix: if the change was intended, update config.lists.${listId}.sha256; otherwise restore the file.`,
+        `config.lists.${listId}: pinned SHA-256 mismatch: ${resolvedPath} has changed since it was pinned.\n  Expected ${expected}\n  Found    ${actual}\n  Fix: if the change was intended, update config.lists.${listId}.sha256; otherwise restore the file.`,
       );
     }
   }

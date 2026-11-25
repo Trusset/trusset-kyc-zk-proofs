@@ -104,7 +104,7 @@ const STAGE_LABEL: Record<ProblemStage, string> = {
 
 export function formatDryRunReport(report: DryRunReport): string {
   const lines: string[] = [];
-  lines.push(`Dry run — nothing was written.`);
+  lines.push(`Dry run: nothing was written.`);
   lines.push(
     `Batch as-of date ${report.asOfDate} (epoch day ${report.epochDays}), manifest version ${report.manifestVersion}.`,
   );

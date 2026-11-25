@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ResolvedConfig } from './config';
 import { Job } from './jobSpec';
+import { childEnvForStdinKeys, keyLine, OperatorKeys } from './keystore';
 
 export type ProverEvent =
   | { event: 'start'; subjects: number }
@@ -38,6 +39,11 @@ export interface SpawnOptions {
   cwd?: string;
   /** Called for every NDJSON event. */
   onEvent?: (event: ProverEvent) => void;
+  /**
+   * Operator keys loaded from the key file or keychain. Sent on the first
+   * stdin line; when absent the prover falls back to the environment (CI).
+   */
+  keys?: Partial<OperatorKeys>;
 }
 
 export async function runProver(
@@ -49,8 +55,9 @@ export async function runProver(
   // A dry run writes nothing and signs nothing, so it must not require key
   // material: an operator should be able to check a batch before they have
   // finished setting the tool up.
-  const masterKey = process.env[rc.masterKeyEnv];
-  const signingKey = process.env[rc.signingKeyEnv];
+  const fromStore = opts.keys && (opts.keys.masterKey || opts.keys.signingKey);
+  const masterKey = fromStore ? opts.keys?.masterKey : process.env[rc.masterKeyEnv];
+  const signingKey = fromStore ? opts.keys?.signingKey : process.env[rc.signingKeyEnv];
   if (!job.dry_run) {
     for (const [name, value] of [
       [rc.masterKeyEnv, masterKey],
@@ -59,10 +66,9 @@ export async function runProver(
       if (!value) {
         throw new Error(
           [
-            `Environment variable ${name} is not set; it holds 32 bytes of hex key material.`,
-            '  Fix: load the keys `npm run init` generated for you:',
-            '    set -a && . ./.trusset/keys.env && set +a',
-            '  If you have not run init yet:  npm run init',
+            `No ${name === rc.masterKeyEnv ? 'master' : 'signing'} key.`,
+            '  Fix: point security.keyStore in config.json at your encrypted key file or the keychain',
+            '       (`npm run key -- create` makes one), or for CI set ' + name + '.',
           ].join('\n'),
         );
       }
@@ -77,12 +83,15 @@ export async function runProver(
   // `TRUSSET_KYC_DETERMINISTIC=1` arms the prover's entropy guard: any OS
   // entropy draw during a deterministic run aborts instead of producing a
   // bundle that cannot be reproduced.
-  const childEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    RUST_BACKTRACE: '0',
-  };
-  if (masterKey) childEnv.TRUSSET_KYC_MASTER_KEY = masterKey;
-  if (signingKey) childEnv.TRUSSET_KYC_SIGNING_KEY = signingKey;
+  // Keys from the key file or keychain go over stdin, never into the child's
+  // environment. The environment path remains for CI.
+  const childEnv: NodeJS.ProcessEnv = fromStore
+    ? { ...childEnvForStdinKeys(process.env), RUST_BACKTRACE: '0' }
+    : { ...process.env, RUST_BACKTRACE: '0' };
+  if (!fromStore) {
+    if (masterKey) childEnv.TRUSSET_KYC_MASTER_KEY = masterKey;
+    if (signingKey) childEnv.TRUSSET_KYC_SIGNING_KEY = signingKey;
+  }
   if (job.deterministic) {
     childEnv.TRUSSET_KYC_DETERMINISTIC = '1';
   } else {
@@ -125,7 +134,8 @@ export async function runProver(
     process.stderr.write(s.replace(/^/gm, '[prover] '));
   });
 
-  // Write the job JSON.
+  // Write the key line (operator path), then the job JSON.
+  if (fromStore && opts.keys) child.stdin.write(keyLine(opts.keys));
   child.stdin.write(JSON.stringify(job));
   child.stdin.end();
 

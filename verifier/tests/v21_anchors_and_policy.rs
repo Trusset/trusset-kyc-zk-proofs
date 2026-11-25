@@ -51,6 +51,7 @@ fn fixture_job(output_root: &str) -> Job {
         unpinned_epoch: false,
         issuer: None,
         dry_run: false,
+        chain: None,
         version: "2.1.0".into(),
         deterministic: true,
         epoch_days: 20587,

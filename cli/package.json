@@ -1,6 +1,6 @@
 {
   "name": "trusset-kyc-cli",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "description": "TypeScript CLI wrapper around trusset-prover and trusset-verifier-cli \u2014 preserves v1 CLI verbs.",
   "main": "dist/index.js",

@@ -1,0 +1,18 @@
+{
+  "attester": "0x1111111111111111111111111111111111111111",
+  "chainId": 11155111,
+  "hardExpiry": 1858118400,
+  "hub": "0x2222222222222222222222222222222222222222",
+  "investorClass": 2,
+  "keyId": 1,
+  "predicateNames": [
+    "KYC_DONE",
+    "ADULT",
+    "EEA_RESIDENT"
+  ],
+  "predicates": "49",
+  "root": "0x744025bd383f75bfbd5b55504233c87acc27aea55707efb3cf865752e71cc7ab",
+  "softExpiry": 1826582400,
+  "subject": "0xabcdef0123456789abcdef0123456789abcdef01",
+  "version": "3.1.0"
+}

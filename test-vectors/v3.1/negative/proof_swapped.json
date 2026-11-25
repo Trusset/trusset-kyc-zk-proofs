@@ -1,0 +1,64 @@
+{
+  "header": {
+    "attester": "0x1111111111111111111111111111111111111111",
+    "chainId": 11155111,
+    "epochDays": 20776,
+    "hub": "0x2222222222222222222222222222222222222222",
+    "keyId": 1,
+    "leafCount": 5,
+    "merkleVersion": 3,
+    "root": "0x744025bd383f75bfbd5b55504233c87acc27aea55707efb3cf865752e71cc7ab",
+    "version": "3.1.0",
+    "wallet": "0xabcdef0123456789abcdef0123456789abcdef01"
+  },
+  "headerSignature": "0x1344dea51d3f678e8308d9bdae1071af766c822a1a93b0a84bb04a37d527275a2ae61d21ce5d37b4341c0bc4c1c54f07defe4700f9072265ffff55b12746d906",
+  "leaf": {
+    "binding": {
+      "descriptor": {
+        "evidenceClass": "DOCUMENTARY",
+        "issuingParty": {
+          "identifier": "529900T8BM49AURSDO55",
+          "identifierScheme": "LEI",
+          "jurisdiction": "DE",
+          "name": "Example Bank AG"
+        },
+        "legalBasis": {
+          "assertion": "Subject is at or above the age of majority",
+          "framework": "NATIONAL",
+          "reference": "contractual capacity, age of majority"
+        }
+      },
+      "predicate": "ADULT",
+      "validity": {
+        "basisAsOf": 20776,
+        "from": 20776,
+        "until": 24425
+      }
+    },
+    "bindingDigest": "0x8b3aaa112604fa07e6b027b4c27aad3a7c664da8ee2a4a883c44622140d0befb",
+    "circuit": "age_threshold",
+    "circuitId": 1,
+    "commitment": "0xd50c3f14908979db133b3f41e680638a3e52574f7334922d5b6a26301831d456",
+    "disclosure": "predicate",
+    "fieldName": "dateOfBirth",
+    "leafHash": "0xa0afb4c842ff7e3fc9cbec261a6f43b97746465bb559f9f44018a5a9ce725fdc",
+    "params": {
+      "minAgeDays": 6570
+    },
+    "paramsHash": "0x9ffc234565695be53e736fda2efe71922997613433dccede49b58f1f2931d24c",
+    "proofDigest": "0xb5ad1d204248410e37b0fbd9206f94cb7ec8caf7c43b5d2a14739558ce409c1f",
+    "proofPath": "proofs/dateOfBirth.bin",
+    "publicDigest": "0x3c52279e920565f971a9b0b8745e5c013330da117fe48039e8416aeac4f001db",
+    "publicInputs": {
+      "commitment": "0xd50c3f14908979db133b3f41e680638a3e52574f7334922d5b6a26301831d456",
+      "currentEpochDays": 20776,
+      "minAgeDays": 6570
+    }
+  },
+  "path": [
+    "0x9f03d34c65f708e7d5827e3f90820f22a9606c535506a22d90c61ee1bc3f6c16",
+    "0x82c4cf8e4230632507ce542af0e2b1f69aa2e968503124e5ad099159d4ffe9cb",
+    "0x4198ba7eddb8abef312cf2c27411ef85d335ab504d3598d2de7dc5d8d45a7170"
+  ],
+  "version": "3.1.0"
+}

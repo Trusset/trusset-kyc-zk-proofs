@@ -1,0 +1,71 @@
+{
+  "header": {
+    "attester": "0x1111111111111111111111111111111111111111",
+    "chainId": 11155111,
+    "epochDays": 20777,
+    "hub": "0x2222222222222222222222222222222222222222",
+    "keyId": 1,
+    "leafCount": 5,
+    "merkleVersion": 3,
+    "root": "0x744025bd383f75bfbd5b55504233c87acc27aea55707efb3cf865752e71cc7ab",
+    "version": "3.1.0",
+    "wallet": "0xabcdef0123456789abcdef0123456789abcdef01"
+  },
+  "headerSignature": "0x3eefafce0647db93a4b0d97f91281916a0e95cb28ec210e7a0b900ec6d27f3993dc68bbaf302eb09e2bbf42825d57a8ff11e5abfc99e0ee2eab5e7b7dcf6ec0b",
+  "leaf": {
+    "binding": {
+      "descriptor": {
+        "evidenceClass": "DOCUMENTARY",
+        "issuingParty": {
+          "identifier": "529900T8BM49AURSDO55",
+          "identifierScheme": "LEI",
+          "jurisdiction": "DE",
+          "name": "Example Bank AG"
+        },
+        "legalBasis": {
+          "assertion": "Subject residence is in an EEA member state",
+          "framework": "EEA_AGREEMENT",
+          "reference": "Annex VIII, right of establishment"
+        }
+      },
+      "listVersion": {
+        "contentHash": "0xdeac9fad7ef186a4075c42c60775295a9041fe836b68f2f0ad201d41e216a8aa",
+        "listId": "eea",
+        "root": "0x2bc4dc54a457373e521626cf69795ff45ccc9a1a25cfc9e21afa1494e601df20",
+        "version": 1
+      },
+      "predicate": "EEA_RESIDENT",
+      "validity": {
+        "basisAsOf": 20776,
+        "from": 20776,
+        "until": 21140
+      }
+    },
+    "bindingDigest": "0xf24492c743b72b3fb0fcdcfa724f09237a18b7e2711fdd1df91b8443ae41bb7c",
+    "circuit": "set_membership",
+    "circuitId": 2,
+    "commitment": "0xa031f29170125eff77870198af45593acf02004c7a142be19375ccb028447adb",
+    "disclosure": "predicate",
+    "fieldName": "country",
+    "leafHash": "0x9f03d34c65f708e7d5827e3f90820f22a9606c535506a22d90c61ee1bc3f6c16",
+    "params": {
+      "listId": "eea"
+    },
+    "paramsHash": "0xd1a00261a15d110c67ca5a36ae068c42b027dc55133b6344363eecda15289432",
+    "proofDigest": "0x3756685ffcee2b6c56b2efd2b316a10c0d940118e1fcb605660a7bc8634cfddf",
+    "proofPath": "proofs/country.bin",
+    "publicDigest": "0xe4e4faaee7669d5e204c3d5fc4f39585c6d63f60f400f6c13744a98a44006a05",
+    "publicInputs": {
+      "commitment": "0xa031f29170125eff77870198af45593acf02004c7a142be19375ccb028447adb",
+      "listId": "eea",
+      "setDepth": 5,
+      "setRoot": "0x2bc4dc54a457373e521626cf69795ff45ccc9a1a25cfc9e21afa1494e601df20"
+    }
+  },
+  "path": [
+    "0xa0afb4c842ff7e3fc9cbec261a6f43b97746465bb559f9f44018a5a9ce725fdc",
+    "0x82c4cf8e4230632507ce542af0e2b1f69aa2e968503124e5ad099159d4ffe9cb",
+    "0x4198ba7eddb8abef312cf2c27411ef85d335ab504d3598d2de7dc5d8d45a7170"
+  ],
+  "version": "3.1.0"
+}

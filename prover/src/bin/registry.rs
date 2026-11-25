@@ -187,13 +187,23 @@ fn paths(o: &Options) -> RegistryPaths {
 }
 
 fn signing_key() -> Result<SigningSecret, String> {
-    let hex = std::env::var("TRUSSET_KYC_SIGNING_KEY").map_err(|_| {
-        "TRUSSET_KYC_SIGNING_KEY is not set. Registry records are signed with the same key that \
-         signs manifests, so a counterparty who trusts your bundles trusts your registries. Run \
-         `npm run init` if you have not generated one."
+    // The CLI sends the key on the first stdin line (from the encrypted key
+    // file or the keychain); `TRUSSET_KYC_SIGNING_KEY` remains for CI.
+    let mut input = String::new();
+    if trusset_prover::keys::keys_on_stdin() {
+        use std::io::Read;
+        std::io::stdin()
+            .read_to_string(&mut input)
+            .map_err(|e| format!("stdin: {}", e))?;
+    }
+    let mut keys = trusset_prover::keys::take_stdin_keys(&mut input).map_err(|e| e.message)?;
+    keys.signing_key().map_err(|_| {
+        "no signing key. Registry records are signed with the same key that signs manifests, so \
+         a counterparty who trusts your bundles trusts your registries. Run the command through \
+         the CLI, which reads your encrypted key file or the keychain (`npm run key -- create` \
+         makes one), or for CI set TRUSSET_KYC_SIGNING_KEY."
             .to_string()
-    })?;
-    SigningSecret::from_hex(&hex).map_err(|e| e.message)
+    })
 }
 
 fn now_iso() -> String {

@@ -14,6 +14,7 @@ pub mod entropy;
 pub mod errors;
 pub mod io;
 pub mod job;
+pub mod keys;
 pub mod leaf;
 pub mod manifest;
 pub mod merkle;

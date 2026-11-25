@@ -3,9 +3,10 @@
 // validated record + the resolved predicate plan. List_commitments are
 // embedded inline so the prover doesn't need filesystem access for them.
 
-import { ResolvedConfig, ResolvedList } from './config';
+import { isV31, isV3Family, ResolvedConfig, ResolvedList } from './config';
 import { ValidatedRecord } from './recordValidation';
-import { computeParamsHash, ageDaysFromParams } from './paramsHash';
+import { computeParamsHash, ageDaysFromParams, resolveTier } from './paramsHash';
+import { parseDateToEpochDays } from './dates';
 import { resolveDescriptor, resolveValidity } from './descriptors';
 import {
   Disclosure,
@@ -41,6 +42,8 @@ export interface JobLeaf {
   validity?: ResolvedValidity;
   /** v3: the list version, for set_membership leaves. */
   list_version?: JobListVersionRef;
+  /** v3.1: the hub predicate this leaf proves. */
+  predicate?: string;
 }
 
 export interface JobSubject {
@@ -77,6 +80,8 @@ export interface Job {
   issuer?: IssuerConfig & { publicKey: string };
   /** v3: validate everything and write nothing. */
   dry_run: boolean;
+  /** v3.1: the hub attestation every bundle is bound to. */
+  chain?: { attester: string; chainId: number; hub: string; keyId: number };
 }
 
 export interface BuildJobOptions {
@@ -140,6 +145,15 @@ export function buildJobWithSkips(
         });
         continue;
       }
+      if (err instanceof QuarantineError) {
+        skipped.push({
+          walletAddress: err.walletAddress,
+          rowNum: err.rowNum,
+          errorCode: err.code,
+          message: err.message,
+        });
+        continue;
+      }
       throw err;
     }
   }
@@ -165,6 +179,7 @@ export function buildJobWithSkips(
       unpinned_epoch: rc.unpinnedEpoch,
       issuer,
       dry_run: !!opts.dryRun,
+      ...(rc.chain ? { chain: { ...rc.chain } } : {}),
     },
     skipped,
   };
@@ -176,17 +191,51 @@ function normalizeHex(hex: string): string {
 }
 
 function buildSubject(record: ValidatedRecord, rc: ResolvedConfig): JobSubject {
-  const passthrough: Record<string, unknown> = {
-    country: record.country,
-    investorType: record.investorType,
-    softExpiryDays: record.softExpiryDays,
-    hardExpiryDays: record.hardExpiryDays,
-  };
+  const v31 = isV31(rc.manifestVersion);
+  // 3.1.0 carries no personal value in clear text: country and investor type
+  // become predicate leaves, and only the expiry settings travel as they are.
+  const passthrough: Record<string, unknown> = v31
+    ? { softExpiryDays: record.softExpiryDays, hardExpiryDays: record.hardExpiryDays }
+    : {
+        country: record.country,
+        investorType: record.investorType,
+        softExpiryDays: record.softExpiryDays,
+        hardExpiryDays: record.hardExpiryDays,
+      };
+
+  const subjectTier = (rc.tiers as Record<string, number | undefined>)[record.investorType];
+  if (v31) {
+    if (!subjectTier || subjectTier < 1 || subjectTier > 3) {
+      throw new QuarantineError(
+        record.walletAddress,
+        record.rowNum,
+        'E_TIER_NONE',
+        `Record ${record.rowNum}: investor type ${record.investorType} cannot be attested. The hub records a class of RETAIL, PROFESSIONAL or ELIGIBLE_COUNTERPARTY. Fix: set the investorType column, or the output.defaults.investorType default.`,
+      );
+    }
+    if (
+      record.softExpiryDays > 0 &&
+      record.hardExpiryDays > 0 &&
+      record.softExpiryDays >= record.hardExpiryDays
+    ) {
+      throw new QuarantineError(
+        record.walletAddress,
+        record.rowNum,
+        'E_INPUT',
+        `Record ${record.rowNum}: softExpiryDays (${record.softExpiryDays}) must be below hardExpiryDays (${record.hardExpiryDays}); the hub refuses the attestation otherwise.`,
+      );
+    }
+  }
 
   // One leaf per resolved predicate instance. The prover re-orders by
   // lex(leafHash) for the Merkle tree, so this order affects only the
-  // readability of the job spec.
-  const leaves: JobLeaf[] = rc.instances.map((inst) => buildLeaf(inst, record, rc));
+  // readability of the job spec. An optional 3.1.0 predicate the subject does
+  // not meet is left out: the attestation then simply lacks that bit.
+  const leaves: JobLeaf[] = [];
+  for (const inst of rc.instances) {
+    if (v31 && inst.spec.optional && !predicateHolds(inst, record, rc, subjectTier)) continue;
+    leaves.push(buildLeaf(inst, record, rc, subjectTier));
+  }
 
   return {
     subject_id: record.walletAddress,
@@ -195,13 +244,59 @@ function buildSubject(record: ValidatedRecord, rc: ResolvedConfig): JobSubject {
   };
 }
 
+/** The witness value a predicate instance reads, or undefined when absent. */
+function witnessValue(field: string, record: ValidatedRecord): unknown {
+  if (field === 'country') return record.country || undefined;
+  if (field === 'investorType') return record.investorType;
+  const raw = record.record[field];
+  return raw === null || raw === undefined || raw === '' ? undefined : raw;
+}
+
+/**
+ * Whether the subject's value satisfies an instance's predicate, evaluated the
+ * way the prover will. Used only to leave out optional 3.1.0 leaves; a
+ * required leaf always goes to the prover, which reports the failure.
+ */
+function predicateHolds(
+  inst: PredicateInstance,
+  record: ValidatedRecord,
+  rc: ResolvedConfig,
+  subjectTier: number | undefined,
+): boolean {
+  const value = witnessValue(inst.field, record);
+  if (value === undefined) return false;
+  const spec = inst.spec;
+  switch (spec.circuit) {
+    case 'set_membership': {
+      const list = rc.lists[spec.params.list];
+      return !!list && list.values.includes(String(value).trim().normalize('NFC'));
+    }
+    case 'age_threshold': {
+      let dob: number;
+      try {
+        dob = typeof value === 'number' ? value : parseDateToEpochDays(String(value), inst.leafName);
+      } catch {
+        return false;
+      }
+      return rc.epochDays - dob >= Number(ageDaysFromParams(spec.params));
+    }
+    case 'tier_threshold':
+      return (
+        subjectTier !== undefined && subjectTier >= resolveTier(spec.params.minTier, rc, subjectTier)
+      );
+    default:
+      return true;
+  }
+}
+
 function buildLeaf(
   instance: PredicateInstance,
   record: ValidatedRecord,
   rc: ResolvedConfig,
+  subjectTier?: number,
 ): JobLeaf {
   const { field, leafName, spec: predicate } = instance;
-  const params_hash = computeParamsHash(field, predicate, rc);
+  const params_hash = computeParamsHash(field, predicate, rc, subjectTier);
 
   // The witness `value` is sourced from the validated record for
   // mapping.fields entries, or directly from the special block for
@@ -232,6 +327,8 @@ function buildLeaf(
       const min = predicate.params.minTier;
       if (typeof min === 'number') {
         publicInputs.min_tier = min;
+      } else if (min === 'ATTESTED') {
+        publicInputs.min_tier = resolveTier(min, rc, subjectTier);
       } else {
         const value = (rc.tiers as Record<string, number | undefined>)[min.toUpperCase()];
         if (value === undefined) {
@@ -245,7 +342,11 @@ function buildLeaf(
     case 'set_membership':
       publicInputs.list_id = predicate.params.list;
       params.listId = predicate.params.list;
-      params.sourceSha256 = rc.lists[predicate.params.list]?.sourceSha256 ?? null;
+      // 3.1.0 leaves carry exactly the parameters the proof binds; the list
+      // version (with its content hash) is in the binding block instead.
+      if (!isV31(rc.manifestVersion)) {
+        params.sourceSha256 = rc.lists[predicate.params.list]?.sourceSha256 ?? null;
+      }
       break;
     case 'preimage_knowledge':
     case 'commitment_only':
@@ -260,7 +361,7 @@ function buildLeaf(
   let descriptor: ResolvedDescriptor | undefined;
   let validity: ResolvedValidity | undefined;
   let listVersion: JobListVersionRef | undefined;
-  if (rc.manifestVersion === '3.0.0') {
+  if (isV3Family(rc.manifestVersion)) {
     descriptor = resolveDescriptor(leafName, predicate, rc.claims?.defaults, rc.issuer!);
     validity = resolveValidity(
       leafName,
@@ -306,7 +407,22 @@ function buildLeaf(
     ...(descriptor ? { descriptor } : {}),
     ...(validity ? { validity } : {}),
     ...(listVersion ? { list_version: listVersion } : {}),
+    ...(isV31(rc.manifestVersion) && predicate.predicate ? { predicate: predicate.predicate } : {}),
   };
+}
+
+/** A row that cannot become a subject for a reason other than a missing value. */
+export class QuarantineError extends Error {
+  readonly walletAddress: string;
+  readonly rowNum: number;
+  readonly code: string;
+  constructor(walletAddress: string, rowNum: number, code: string, message: string) {
+    super(message);
+    this.name = 'QuarantineError';
+    this.walletAddress = walletAddress;
+    this.rowNum = rowNum;
+    this.code = code;
+  }
 }
 
 /**

@@ -17,8 +17,14 @@
 //! than trusting a single pass/fail verdict. Their signatures are a wire
 //! contract with `services/customers/zk-verifier/index.js`; see
 //! `scripts/rebuild-wasm.sh` for the re-vendoring procedure.
+//!
+//! **v3.1**: `verify_disclosure` checks one disclosed leaf on its own;
+//! `verify_with_header` verifies a whole 3.1.0 bundle including its signed
+//! header; `header_signing_bytes`, `verify_header_signature`,
+//! `merkle_root_from_path_hex`, and `attestation_from_manifest` expose the
+//! pieces for a backend that runs its own ladder.
 
-use crate::bundle::loaded_from_parts;
+use crate::bundle::{loaded_from_parts, loaded_from_parts_with_header};
 use crate::{verify_loaded, AsOf, TemporalContext, VerifyAnchors, VerifyOptions};
 use std::collections::BTreeMap;
 use trusset_bundle_format::claims::{compute_binding_digest, LeafBinding};
@@ -341,41 +347,12 @@ pub fn proof_digest_hex(proof_bytes: &[u8]) -> String {
 /// the typed circuit public inputs exactly as the prover does.
 #[wasm_bindgen]
 pub fn public_digest_hex(circuit_id: u8, public_inputs_json: &str) -> Result<String, JsError> {
-    use trusset_circuit_age_threshold as age;
-    use trusset_circuit_preimage_knowledge as preimage;
-    use trusset_circuit_set_membership as set;
-    use trusset_circuit_tier_threshold as tier;
-
     let value: serde_json::Value = serde_json::from_str(public_inputs_json)
         .map_err(|e| JsError::new(&format!("publicInputs parse: {}", e)))?;
     let circuit = CircuitId::try_from(circuit_id)
         .map_err(|b| JsError::new(&format!("unknown circuitId {}", b)))?;
-    let commitment = json_digest(&value, "commitment")?;
-
-    let digest = match circuit {
-        CircuitId::PreimageKnowledge => preimage::PublicInputs { commitment }.digest(),
-        CircuitId::TierThreshold => tier::PublicInputs {
-            commitment,
-            min_tier: json_u64(&value, "minTier")?
-                .try_into()
-                .map_err(|_| JsError::new("minTier out of u8 range"))?,
-        }
-        .digest(),
-        CircuitId::AgeThreshold => age::PublicInputs {
-            commitment,
-            min_age_days: json_u64(&value, "minAgeDays")?,
-            current_epoch_days: json_u64(&value, "currentEpochDays")?,
-        }
-        .digest(),
-        CircuitId::SetMembership => set::PublicInputs {
-            commitment,
-            set_root: json_digest(&value, "setRoot")?,
-            set_depth: json_u64(&value, "setDepth")?
-                .try_into()
-                .map_err(|_| JsError::new("setDepth out of u8 range"))?,
-        }
-        .digest(),
-    };
+    let digest =
+        crate::v31::public_digest_from_json(circuit, &value).map_err(|e| JsError::new(&e))?;
     Ok(digest_to_hex(&digest))
 }
 
@@ -514,26 +491,164 @@ pub fn verify_leaf_stark_v(
 }
 
 // =====================================================================
+// v3.1: disclosures, headers, inclusion paths, attestations
+// =====================================================================
+
+/// Check one disclosed leaf on its own. `disclosure_json` is the content of
+/// `disclosures/<leaf>.json`, `proof_bytes` the matching `proofs/<leaf>.bin`,
+/// `operator_public_key` the attester's 32-byte ed25519 key (for example
+/// `operatorKeyAt(attester, keyId)` read from the hub), and `expected_wallet`
+/// the wallet the caller is checking, or `""` to skip that comparison.
+///
+/// Returns the `DisclosureReport` as JSON; `ok` is the verdict. Throws only
+/// when the key is not 32 bytes.
+#[wasm_bindgen]
+pub fn verify_disclosure(
+    disclosure_json: &[u8],
+    proof_bytes: &[u8],
+    operator_public_key: &[u8],
+    expected_wallet: &str,
+) -> Result<String, JsError> {
+    let pk = parse_public_key(operator_public_key)?;
+    let wallet = if expected_wallet.trim().is_empty() {
+        None
+    } else {
+        Some(expected_wallet)
+    };
+    let report = crate::v31::verify_disclosure(disclosure_json, proof_bytes, &pk, wallet);
+    serde_json::to_string(&report).map_err(|e| JsError::new(&format!("report serialize: {}", e)))
+}
+
+/// Verify a whole 3.1.0 bundle, including its signed header. Same anchors as
+/// `verify_with_anchors`; `header_json` and `header_sig` are `header.json`
+/// and `header.sig`.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn verify_with_header(
+    manifest_bytes: &[u8],
+    kyc_hash_text: &str,
+    signature_bytes: &[u8],
+    proofs_json: &str,
+    header_json: &[u8],
+    header_sig: &[u8],
+    expected_public_key: &[u8],
+    expected_root: &str,
+    accept_stub: bool,
+) -> Result<String, JsError> {
+    let raw: BTreeMap<String, Vec<u8>> = serde_json::from_str(proofs_json)
+        .map_err(|e| JsError::new(&format!("proofs_json parse: {}", e)))?;
+    let loaded = loaded_from_parts_with_header(
+        manifest_bytes,
+        kyc_hash_text,
+        Some(signature_bytes.to_vec()),
+        raw,
+        Some(header_json.to_vec()),
+        Some(header_sig.to_vec()),
+    )
+    .map_err(|e| JsError::new(&format!("load: {}", e)))?;
+    let anchors = VerifyAnchors {
+        expected_public_key: if expected_public_key.is_empty() {
+            None
+        } else {
+            Some(parse_public_key(expected_public_key)?)
+        },
+        expected_root: if expected_root.trim().is_empty() {
+            None
+        } else {
+            Some(expected_root.trim().to_ascii_lowercase())
+        },
+    };
+    if anchors.is_empty() {
+        return Err(JsError::new(
+            "at least one anchor is required: expected_public_key or expected_root",
+        ));
+    }
+    let opts = VerifyOptions {
+        anchors,
+        accept_stub,
+        as_of: AsOf::Date {
+            epoch_days: loaded.manifest.epoch_days,
+        },
+        context: TemporalContext::default(),
+        now_epoch_days: loaded.manifest.epoch_days,
+    };
+    let report = verify_loaded(&loaded, &opts);
+    serde_json::to_string(&report).map_err(|e| JsError::new(&format!("report serialize: {}", e)))
+}
+
+/// The 155 bytes the operator key signs for a v3.1 header.
+#[wasm_bindgen]
+pub fn header_signing_bytes(header_json: &[u8]) -> Result<Vec<u8>, JsError> {
+    let header: trusset_bundle_format::header::DisclosureHeader =
+        serde_json::from_slice(header_json)
+            .map_err(|e| JsError::new(&format!("header parse: {}", e)))?;
+    header
+        .signing_bytes()
+        .map(|b| b.to_vec())
+        .map_err(|e| JsError::new(&e))
+}
+
+/// Check a v3.1 header signature (strict ed25519). `false` on any malformed
+/// input rather than a throw.
+#[wasm_bindgen]
+pub fn verify_header_signature(header_json: &[u8], signature: &[u8], public_key: &[u8]) -> bool {
+    if signature.len() != sign::SIGNATURE_LEN || public_key.len() != sign::PUBLIC_KEY_LEN {
+        return false;
+    }
+    let Ok(header) =
+        serde_json::from_slice::<trusset_bundle_format::header::DisclosureHeader>(header_json)
+    else {
+        return false;
+    };
+    let Ok(bytes) = header.signing_bytes() else {
+        return false;
+    };
+    let mut sig = [0u8; sign::SIGNATURE_LEN];
+    sig.copy_from_slice(signature);
+    let mut pk = [0u8; sign::PUBLIC_KEY_LEN];
+    pk.copy_from_slice(public_key);
+    sign::verify_strict(&pk, &bytes, &sig)
+}
+
+/// Rebuild a Merkle v3 root from one leaf hash and its inclusion path
+/// (`["0x…", …]`, leaf level first).
+#[wasm_bindgen]
+pub fn merkle_root_from_path_hex(
+    leaf_hash_hex: &str,
+    path_json: &str,
+    leaf_count: u32,
+) -> Result<String, JsError> {
+    let leaf = parse_digest(leaf_hash_hex, "leafHash")?;
+    let hexes: Vec<String> =
+        serde_json::from_str(path_json).map_err(|e| JsError::new(&format!("path parse: {}", e)))?;
+    let mut path = Vec::with_capacity(hexes.len());
+    for h in &hexes {
+        path.push(parse_digest(h, "path sibling")?);
+    }
+    let root =
+        trusset_bundle_format::merkle::root_from_path_v3(&leaf, &path, u64::from(leaf_count))
+            .ok_or_else(|| JsError::new("path length does not match leafCount"))?;
+    Ok(digest_to_hex(&root))
+}
+
+/// `attestation.json` derived from a 3.1.0 manifest. A backend builds the
+/// attest calldata from this, computed from the verified manifest, rather
+/// than from an uploaded file it would have to trust.
+#[wasm_bindgen]
+pub fn attestation_from_manifest(manifest_bytes: &[u8]) -> Result<String, JsError> {
+    let manifest: Manifest = serde_json::from_slice(manifest_bytes)
+        .map_err(|e| JsError::new(&format!("manifest parse: {}", e)))?;
+    let a = trusset_bundle_format::attestation::AttestationFile::from_manifest(&manifest)
+        .map_err(|e| JsError::new(&e))?;
+    serde_json::to_string(&a).map_err(|e| JsError::new(&format!("serialize: {}", e)))
+}
+
+// =====================================================================
 // Helpers
 // =====================================================================
 
 fn parse_digest(hex: &str, label: &str) -> Result<Digest, JsError> {
     hex_to_digest(hex).map_err(|_| JsError::new(&format!("{} is not 0x + 64 hex", label)))
-}
-
-fn json_digest(value: &serde_json::Value, key: &str) -> Result<Digest, JsError> {
-    let s = value
-        .get(key)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| JsError::new(&format!("publicInputs.{} missing", key)))?;
-    parse_digest(s, key)
-}
-
-fn json_u64(value: &serde_json::Value, key: &str) -> Result<u64, JsError> {
-    value
-        .get(key)
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| JsError::new(&format!("publicInputs.{} missing or not a u64", key)))
 }
 
 fn decode_wallet(addr: &str) -> Option<[u8; 20]> {

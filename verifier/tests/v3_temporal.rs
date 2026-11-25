@@ -139,6 +139,7 @@ fn fixture_job(output_root: &str) -> Job {
         unpinned_epoch: false,
         issuer: Some(issuer()),
         dry_run: false,
+        chain: None,
         subjects: vec![JobSubject {
             subject_id: WALLET.into(),
             passthrough: serde_json::json!({}),
@@ -167,6 +168,7 @@ fn fixture_job(output_root: &str) -> Job {
                         root: v1_root,
                         content_hash: list_content_hash(&list_v1()),
                     }),
+                    predicate: None,
                 },
                 JobLeaf {
                     field: "investorType".into(),
@@ -184,6 +186,7 @@ fn fixture_job(output_root: &str) -> Job {
                     )),
                     validity: Some(validity(730)),
                     list_version: None,
+                    predicate: None,
                 },
             ],
         }],

@@ -160,7 +160,7 @@ export function resolveDescriptor(
     throw new DescriptorError(
       `${configPath}.evidenceRef`,
       'is not a string',
-      'use an operator-side case or file reference, and never subject data — it travels in cleartext inside the signed manifest',
+      'use an operator-side case or file reference, and never subject data: it travels in cleartext inside the signed manifest',
     );
   }
 
@@ -272,5 +272,5 @@ export function resolveValidity(
 
 /** Human summary used by `show` and by init's report. */
 export function describeDescriptor(d: ResolvedDescriptor): string {
-  return `${d.legalBasis.framework} ${d.legalBasis.reference} — ${d.legalBasis.assertion} [${d.evidenceClass}, warranted by ${d.issuingParty.name}]`;
+  return `${d.legalBasis.framework} ${d.legalBasis.reference}: ${d.legalBasis.assertion} [${d.evidenceClass}, warranted by ${d.issuingParty.name}]`;
 }

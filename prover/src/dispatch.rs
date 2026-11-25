@@ -16,6 +16,7 @@ use trusset_bundle_format::leaf::compute_leaf_hash_bound;
 use trusset_bundle_format::manifest::{
     DISCLOSURE_COMMITMENT_ONLY, DISCLOSURE_PLAINTEXT, DISCLOSURE_PREDICATE,
 };
+use trusset_bundle_format::predicates::{check_leaf_predicate, PredicateEvidence};
 use trusset_bundle_format::registry::list_content_hash;
 use trusset_circuit_age_threshold as age;
 use trusset_circuit_preimage_knowledge as preimage;
@@ -157,6 +158,32 @@ fn prove_leaf_inner(
             }
         }
     };
+
+    if let Some(name) = leaf.predicate.as_deref() {
+        let Some(b) = binding.as_ref() else {
+            return Err(ProverError::new(
+                ErrorCode::PredicateInvalid,
+                format!(
+                    "predicate {} needs a claim descriptor: the name is bound into the leaf hash \
+                     through the binding block",
+                    name
+                ),
+            ));
+        };
+        let evidence = PredicateEvidence {
+            circuit: Some(circuit_id),
+            commitment_only,
+            min_age_days: manifest_public_inputs
+                .get("minAgeDays")
+                .and_then(|v| v.as_u64()),
+            min_tier: manifest_public_inputs
+                .get("minTier")
+                .and_then(|v| v.as_u64()),
+            list_id: b.list_version.as_ref().map(|lv| lv.list_id.as_str()),
+        };
+        check_leaf_predicate(name, &evidence)
+            .map_err(|m| ProverError::new(ErrorCode::PredicateInvalid, m))?;
+    }
 
     let proof_digest = compute_proof_digest(&proof_bytes);
     let binding_digest = match binding.as_ref() {
@@ -396,6 +423,7 @@ fn build_binding(
         descriptor,
         validity,
         list_version: leaf.list_version.clone(),
+        predicate: leaf.predicate.clone(),
     }))
 }
 

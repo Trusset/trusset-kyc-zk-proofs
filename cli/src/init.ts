@@ -1,4 +1,4 @@
-// `trusset-kyc init` — one command from a clone to a runnable configuration.
+// `trusset-kyc init`, one command from a clone to a runnable configuration.
 //
 // Before this, reaching a first valid bundle took sixteen steps, five of them
 // documented only in docs/ and one impossible (the README told operators to
@@ -15,8 +15,23 @@ import * as path from 'path';
 import * as readline from 'readline';
 import { epochDaysToIsoDate, todayEpochDays } from './dates';
 import { generateKeyHex, publicKeyHexFromSigningKey } from './keys';
+import {
+  checkPassphraseStrength,
+  childEnvForStdinKeys,
+  DEFAULT_KEY_FILE,
+  encryptKeyStore,
+  keychainLoad,
+  keychainStore,
+  KEYCHAIN_ACCOUNT,
+  KEYCHAIN_SERVICE,
+  keyLine,
+  OperatorKeys,
+  readPassphrase,
+  writeKeyStoreFile,
+} from './keystore';
+import { validateChain } from './config';
 import { loadListRegistry, registryRoot } from './registry';
-import { EVIDENCE_CLASSES, IDENTIFIER_SCHEMES } from './types';
+import { ChainConfig, EVIDENCE_CLASSES, IDENTIFIER_SCHEMES, KeyStoreConfig } from './types';
 
 export const KEY_FILE = '.trusset/keys.env';
 
@@ -30,6 +45,20 @@ export interface InitOptions {
   json?: boolean;
   /** Do not prompt even when stdin is a TTY; fail on anything missing. */
   nonInteractive?: boolean;
+  /**
+   * 3.1.0: the hub attestation bundles are bound to. All three of chainId,
+   * hub, and attester make init write a 3.1.0 config.
+   */
+  chainId?: number;
+  hub?: string;
+  attester?: string;
+  /** The hub's id for the operator key; 1 for an attester's first key. */
+  hubKeyId?: number;
+  /**
+   * Where to keep the keys: `file` (encrypted, the default for 3.1.0),
+   * `keychain`, or `env` (a plaintext .trusset/keys.env, for CI).
+   */
+  keyStore?: 'file' | 'keychain' | 'env';
 }
 
 export interface CheckResult {
@@ -44,8 +73,13 @@ export interface InitReport {
   checks: CheckResult[];
   configPath: string;
   configWritten: boolean;
+  /** Where the keys are: a file path, or `keychain <service>/<account>`. */
   keyFilePath: string;
   keysWritten: boolean;
+  /** `file`, `keychain`, or `env`. */
+  keyStore: string;
+  /** The manifest version the written config emits. */
+  manifestVersion?: string;
   publicKeyHex?: string;
   registryDir: string;
   listVersionsRecorded: string[];
@@ -87,7 +121,7 @@ function checkCargo(): CheckResult {
       name: 'Rust toolchain',
       ok: false,
       detail: 'cargo not found on PATH',
-      fix: 'install Rust from https://rustup.rs — the prover and verifier are built from source, and this tool ships no prebuilt binaries',
+      fix: 'install Rust from https://rustup.rs, the prover and verifier are built from source, and this tool ships no prebuilt binaries',
     };
   }
   try {
@@ -122,7 +156,7 @@ function checkBinaries(): CheckResult[] {
       : {
           name: bin,
           ok: false,
-          detail: `not built — needed for ${purpose}`,
+          detail: `not built, needed for ${purpose}`,
           fix: 'run `npm run build` (first build compiles ~130 crates and takes a few minutes)',
         };
   });
@@ -142,7 +176,7 @@ function checkInputDir(): CheckResult {
         name: 'input/',
         ok: false,
         detail: 'empty',
-        fix: 'place .json or .csv records in input/ — see the input format in README.md',
+        fix: 'place .json or .csv records in input/, see the input format in README.md',
       };
 }
 
@@ -208,6 +242,73 @@ function ensureGitignored(entry: string): void {
 function configTemplate(
   issuer: { name: string; identifierScheme: string; identifier: string; jurisdiction: string; keyId: string },
   epochDays: number,
+  chain?: ChainConfig,
+  keyStore?: KeyStoreConfig,
+): unknown {
+  const base = configTemplateV30(issuer, epochDays) as Record<string, Record<string, unknown>>;
+  if (!chain) return base;
+  return toV31Template(base, chain, keyStore);
+}
+
+/**
+ * The 3.1.0 shape of the template: hub predicates on every proving leaf, the
+ * country proved against the EEA list (optional, so non-EEA residents still
+ * issue) and the allowlist, the investor class proved per subject, and no
+ * clear-text value anywhere.
+ */
+function toV31Template(
+  base: Record<string, Record<string, unknown>>,
+  chain: ChainConfig,
+  keyStore?: KeyStoreConfig,
+): unknown {
+  const p = base.predicates as Record<string, Record<string, unknown>>;
+  p.dateOfBirth.predicate = 'ADULT';
+  const allowlistCountry = { ...p.country, predicate: 'RESIDENCY_ON_FILE' };
+  p.country = [
+    {
+      circuit: 'set_membership',
+      params: { list: 'eea' },
+      predicate: 'EEA_RESIDENT',
+      optional: true,
+      descriptor: {
+        legalBasis: {
+          framework: 'EEA_AGREEMENT',
+          reference: 'Art. 31, right of establishment',
+          assertion: 'Subject residence is in an EEA member state',
+        },
+        evidenceClass: 'DOCUMENTARY',
+      },
+      validity: { days: 365 },
+    },
+    allowlistCountry,
+  ] as unknown as Record<string, unknown>;
+  p.nationality.predicate = 'CITIZENSHIP_ON_FILE';
+  p.investorType = {
+    ...p.investorType,
+    params: { minTier: 'ATTESTED' },
+    predicate: 'INVESTOR_CLASS',
+    descriptor: {
+      legalBasis: {
+        framework: 'MiFID_II',
+        reference: 'Annex II, client categorisation',
+        assertion: 'Subject is categorised in the attested client class',
+      },
+      evidenceClass: 'DOCUMENTARY',
+    },
+  };
+  const security = { ...base.security, ...(keyStore ? { keyStore } : {}) };
+  return {
+    ...base,
+    lists: { country_allowlist: {}, eea: {} },
+    security,
+    manifest: { ...base.manifest, version: '3.1.0' },
+    chain,
+  };
+}
+
+function configTemplateV30(
+  issuer: { name: string; identifierScheme: string; identifier: string; jurisdiction: string; keyId: string },
+  epochDays: number,
 ): unknown {
   return {
     mapping: {
@@ -241,7 +342,7 @@ function configTemplate(
         descriptor: {
           legalBasis: {
             framework: 'NATIONAL',
-            reference: 'contractual capacity — age of majority',
+            reference: 'contractual capacity, age of majority',
             assertion: 'Subject is at or above the age of majority',
           },
           evidenceClass: 'DOCUMENTARY',
@@ -254,7 +355,7 @@ function configTemplate(
         descriptor: {
           legalBasis: {
             framework: 'AMLD5',
-            reference: 'Art. 9 — high-risk third countries',
+            reference: 'Art. 9, high-risk third countries',
             assertion: 'Subject residence is in a jurisdiction on the approved list',
           },
           evidenceClass: 'DOCUMENTARY',
@@ -267,7 +368,7 @@ function configTemplate(
         descriptor: {
           legalBasis: {
             framework: 'AMLD5',
-            reference: 'Art. 13(1)(a) — customer identification',
+            reference: 'Art. 13(1)(a), customer identification',
             assertion: 'Subject nationality is in a jurisdiction on the approved list',
           },
           evidenceClass: 'DOCUMENTARY',
@@ -280,7 +381,7 @@ function configTemplate(
         descriptor: {
           legalBasis: {
             framework: 'AMLD5',
-            reference: 'Art. 13(1)(a) — customer identification',
+            reference: 'Art. 13(1)(a), customer identification',
             assertion: 'Identity document was issued by a jurisdiction on the approved list',
           },
           evidenceClass: 'DOCUMENTARY',
@@ -293,7 +394,7 @@ function configTemplate(
         descriptor: {
           legalBasis: {
             framework: 'MiFID_II',
-            reference: 'Annex II Section I — professional clients',
+            reference: 'Annex II Section I, professional clients',
             assertion: 'Subject is categorised at or above professional client',
           },
           evidenceClass: 'DOCUMENTARY',
@@ -306,7 +407,7 @@ function configTemplate(
         descriptor: {
           legalBasis: {
             framework: 'AMLD5',
-            reference: 'Art. 13(1)(a) — customer identification',
+            reference: 'Art. 13(1)(a), customer identification',
             assertion: 'Subject given name as recorded at onboarding',
           },
           evidenceClass: 'DOCUMENTARY',
@@ -319,7 +420,7 @@ function configTemplate(
         descriptor: {
           legalBasis: {
             framework: 'AMLD5',
-            reference: 'Art. 13(1)(a) — customer identification',
+            reference: 'Art. 13(1)(a), customer identification',
             assertion: 'Subject family name as recorded at onboarding',
           },
           evidenceClass: 'DOCUMENTARY',
@@ -332,7 +433,7 @@ function configTemplate(
         descriptor: {
           legalBasis: {
             framework: 'AMLD5',
-            reference: 'Art. 13(1)(a) — customer identification',
+            reference: 'Art. 13(1)(a), customer identification',
             assertion: 'Class of identity document examined',
           },
           evidenceClass: 'DOCUMENTARY',
@@ -345,7 +446,7 @@ function configTemplate(
         descriptor: {
           legalBasis: {
             framework: 'AMLD5',
-            reference: 'Art. 13(1)(a) — customer identification',
+            reference: 'Art. 13(1)(a), customer identification',
             assertion: 'Identifier of the identity document examined',
           },
           evidenceClass: 'DOCUMENTARY',
@@ -462,19 +563,83 @@ async function resolveIssuer(opts: InitOptions): Promise<{
 
 // ================================= main =================================
 
+/**
+ * Keys for init. `env` keeps the v3.0 plaintext .trusset/keys.env (for CI);
+ * `file` encrypts them under a passphrase; `keychain` stores them in the macOS
+ * keychain. An existing store is reused, never overwritten without --force.
+ */
+async function initKeys(
+  mode: 'file' | 'keychain' | 'env',
+  force: boolean,
+): Promise<{ keys: OperatorKeys; written: boolean; location: string; keyStore?: KeyStoreConfig }> {
+  if (mode === 'env') {
+    const k = writeKeyFile(force);
+    return {
+      keys: { signingKey: k.signingKey, masterKey: k.masterKey },
+      written: k.written,
+      location: path.join(process.cwd(), KEY_FILE),
+    };
+  }
+  if (mode === 'keychain') {
+    if (!force) {
+      try {
+        const existing = keychainLoad();
+        return {
+          keys: existing,
+          written: false,
+          location: `keychain ${KEYCHAIN_SERVICE}/${KEYCHAIN_ACCOUNT}`,
+          keyStore: { type: 'keychain' },
+        };
+      } catch {
+        // No item yet: create one below.
+      }
+    }
+    const keys = { signingKey: generateKeyHex(), masterKey: generateKeyHex() };
+    keychainStore(keys);
+    return { keys, written: true, location: `keychain ${KEYCHAIN_SERVICE}/${KEYCHAIN_ACCOUNT}`, keyStore: { type: 'keychain' } };
+  }
+  const file = path.join(process.cwd(), DEFAULT_KEY_FILE);
+  if (fs.existsSync(file) && !force) {
+    throw new Error(
+      `${DEFAULT_KEY_FILE} already exists. init does not unlock or replace it.\n  Fix: keep it and edit config.json by hand, or re-run with --force (back the old file up first).`,
+    );
+  }
+  const keys = { signingKey: generateKeyHex(), masterKey: generateKeyHex() };
+  const passphrase = await readPassphrase(`New passphrase for ${DEFAULT_KEY_FILE}: `, true);
+  checkPassphraseStrength(passphrase);
+  writeKeyStoreFile(file, encryptKeyStore(keys, passphrase), force);
+  ensureGitignored('.trusset/');
+  return { keys, written: true, location: file, keyStore: { type: 'file', path: DEFAULT_KEY_FILE } };
+}
+
 export async function runInit(opts: InitOptions): Promise<InitReport> {
   const checks: CheckResult[] = [checkNode(), checkCargo(), ...checkBinaries()];
 
   const configPath = path.join(process.cwd(), 'config.json');
   const configExists = fs.existsSync(configPath);
 
-  const keys = writeKeyFile(!!opts.force);
+  const chainGiven = [opts.chainId, opts.hub, opts.attester].filter((v) => v !== undefined).length;
+  if (chainGiven > 0 && chainGiven < 3) {
+    throw new Error('--chain-id, --hub and --attester go together: a 3.1.0 config is bound to one hub attestation.');
+  }
+  const chain =
+    chainGiven === 3
+      ? validateChain({
+          chainId: Number(opts.chainId),
+          hub: String(opts.hub),
+          attester: String(opts.attester),
+          keyId: Number(opts.hubKeyId ?? 1),
+        })
+      : undefined;
+  const keyMode = opts.keyStore ?? (chain ? 'file' : 'env');
+  const stored = await initKeys(keyMode, !!opts.force);
+  const keys = { ...stored.keys, written: stored.written };
   const publicKeyHex = publicKeyHexFromSigningKey(keys.signingKey);
 
   let configWritten = false;
   if (!configExists || opts.force) {
     const issuer = await resolveIssuer(opts);
-    const template = configTemplate(issuer, todayEpochDays());
+    const template = configTemplate(issuer, todayEpochDays(), chain, stored.keyStore);
     fs.writeFileSync(configPath, JSON.stringify(template, null, 2) + '\n');
     configWritten = true;
   }
@@ -496,8 +661,9 @@ export async function runInit(opts: InitOptions): Promise<InitReport> {
         registryBin,
         ['list-version', '--list-id', listId, '--source', source, '--registry', regDir],
         {
-          env: { ...process.env, TRUSSET_KYC_SIGNING_KEY: keys.signingKey },
-          stdio: ['ignore', 'pipe', 'pipe'],
+          env: childEnvForStdinKeys(process.env),
+          input: keyLine({ signingKey: keys.signingKey }),
+          stdio: ['pipe', 'pipe', 'pipe'],
         },
       );
       listVersionsRecorded.push(listId);
@@ -538,23 +704,32 @@ export async function runInit(opts: InitOptions): Promise<InitReport> {
   if (!ready) {
     nextSteps.push('Resolve the items marked [missing] above, then re-run `npm run init`.');
   }
-  nextSteps.push(`Load your keys into the shell:   set -a && . ./${KEY_FILE} && set +a`);
+  if (keyMode === 'env') {
+    nextSteps.push(`Load your keys into the shell:   set -a && . ./${KEY_FILE} && set +a   (CI only; \`npm run key -- encrypt --from ${KEY_FILE}\` moves them into an encrypted file)`);
+  } else {
+    nextSteps.push(`Keys are in ${stored.location}; commands that sign ask for them. Back it up.`);
+  }
+  if (chain) {
+    nextSteps.push('Publish the operator key on the hub from the attester wallet:  npm run key -- show');
+  }
   if (configWritten) {
     nextSteps.push('Review config.json: the claim descriptors are starting points, not legal advice.');
     nextSteps.push(
-      `Review the allowlist at config/list_commitments/*.source.txt — the shipped one is a sample.`,
+      `Review the allowlist at config/list_commitments/*.source.txt, the shipped one is a sample.`,
     );
   }
   nextSteps.push('Put records in input/, then check them without proving:  npm run hash -- --dry-run');
-  nextSteps.push('Produce bundles:                 npm start');
+  nextSteps.push(chain ? 'Produce bundles and attestation.json files:  npm run issue' : 'Produce bundles:                 npm start');
   nextSteps.push(`Verify one:                      npm run verify -- <wallet> --public-key ${publicKeyHex}`);
 
   return {
     checks,
     configPath,
     configWritten,
-    keyFilePath: path.join(process.cwd(), KEY_FILE),
+    keyFilePath: stored.location,
     keysWritten: keys.written,
+    keyStore: keyMode,
+    manifestVersion: configWritten ? (chain ? '3.1.0' : '3.0.0') : undefined,
     publicKeyHex,
     registryDir: regDir,
     listVersionsRecorded,
@@ -595,11 +770,12 @@ export function formatInitReport(report: InitReport): string {
   lines.push('');
   lines.push('Configuration');
   lines.push(
-    `  ${report.configWritten ? '[written] ' : '[kept]    '} ${report.configPath}${report.configWritten ? '' : ' (already existed — left untouched; --force replaces it)'}`,
+    `  ${report.configWritten ? '[written] ' : '[kept]    '} ${report.configPath}${report.configWritten ? '' : ' (already existed, left untouched; --force replaces it)'}`,
   );
   lines.push(
-    `  ${report.keysWritten ? '[written] ' : '[kept]    '} ${report.keyFilePath} (mode 0600)`,
+    `  ${report.keysWritten ? '[written] ' : '[kept]    '} ${report.keyFilePath}${report.keyStore === 'keychain' ? '' : ' (mode 0600)'}${report.keyStore === 'env' ? ', plaintext, for CI' : ''}`,
   );
+  if (report.manifestVersion) lines.push(`  config emits manifest ${report.manifestVersion}`);
   if (report.listVersionsRecorded.length > 0) {
     lines.push(`  [written]  list registry version 1 for: ${report.listVersionsRecorded.join(', ')}`);
   }

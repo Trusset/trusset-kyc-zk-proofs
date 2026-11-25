@@ -1,6 +1,6 @@
 {
   "name": "trusset-kyc-hashing",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "description": "Per-leaf zk-STARK KYC hashing tool for Trusset tokenization infrastructure",
   "main": "cli/dist/index.js",
@@ -9,14 +9,17 @@
     "init": "bash scripts/build.sh && node cli/dist/index.js init",
     "start": "bash scripts/build.sh && node cli/dist/index.js hash",
     "hash": "bash scripts/build.sh && node cli/dist/index.js hash",
+    "issue": "bash scripts/build.sh && node cli/dist/index.js issue",
     "decrypt": "bash scripts/build.sh && node cli/dist/index.js decrypt",
     "verify": "bash scripts/build.sh && node cli/dist/index.js verify",
     "show": "bash scripts/build.sh && node cli/dist/index.js show",
+    "key": "bash scripts/build.sh && node cli/dist/index.js key",
     "list-version": "bash scripts/build.sh && node cli/dist/index.js list-version",
     "anchor": "bash scripts/build.sh && node cli/dist/index.js anchor",
     "revoke": "bash scripts/build.sh && node cli/dist/index.js revoke",
     "archive": "bash scripts/build.sh && node cli/dist/index.js archive",
-    "postinstall": "bash scripts/build.sh"
+    "postinstall": "bash scripts/build.sh",
+    "test:wasm": "bash scripts/rebuild-wasm.sh && node --test tests/wasm/"
   },
   "engines": {
     "node": ">=18"

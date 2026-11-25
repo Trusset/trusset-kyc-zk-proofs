@@ -1,0 +1,263 @@
+{
+  "asOfDate": "2026-11-19",
+  "chain": {
+    "attester": "0x1111111111111111111111111111111111111111",
+    "chainId": 11155111,
+    "hub": "0x2222222222222222222222222222222222222222",
+    "keyId": 1
+  },
+  "circuitsVersion": 3,
+  "configHash": "0xabababababababababababababababababababababababababababababababab",
+  "createdAt": "2026-11-19T00:00:00Z",
+  "deterministic": true,
+  "epochDays": 20776,
+  "epochDaysSource": "fixed:20776",
+  "issuer": {
+    "identifier": "529900T8BM49AURSDO55",
+    "identifierScheme": "LEI",
+    "jurisdiction": "DE",
+    "keyId": "issuing-2026-11",
+    "name": "Example Bank AG",
+    "publicKey": "0x2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12"
+  },
+  "kycHash": "0x744025bd383f75bfbd5b55504233c87acc27aea55707efb3cf865752e71cc7ab",
+  "leaves": [
+    {
+      "binding": {
+        "descriptor": {
+          "evidenceClass": "DOCUMENTARY",
+          "issuingParty": {
+            "identifier": "529900T8BM49AURSDO55",
+            "identifierScheme": "LEI",
+            "jurisdiction": "DE",
+            "name": "Example Bank AG"
+          },
+          "legalBasis": {
+            "assertion": "Subject residence is in an EEA member state",
+            "framework": "EEA_AGREEMENT",
+            "reference": "Annex VIII, right of establishment"
+          }
+        },
+        "listVersion": {
+          "contentHash": "0xdeac9fad7ef186a4075c42c60775295a9041fe836b68f2f0ad201d41e216a8aa",
+          "listId": "eea",
+          "root": "0x2bc4dc54a457373e521626cf69795ff45ccc9a1a25cfc9e21afa1494e601df20",
+          "version": 1
+        },
+        "predicate": "EEA_RESIDENT",
+        "validity": {
+          "basisAsOf": 20776,
+          "from": 20776,
+          "until": 21140
+        }
+      },
+      "bindingDigest": "0xf24492c743b72b3fb0fcdcfa724f09237a18b7e2711fdd1df91b8443ae41bb7c",
+      "circuit": "set_membership",
+      "circuitId": 2,
+      "commitment": "0xa031f29170125eff77870198af45593acf02004c7a142be19375ccb028447adb",
+      "disclosure": "predicate",
+      "fieldName": "country",
+      "leafHash": "0x9f03d34c65f708e7d5827e3f90820f22a9606c535506a22d90c61ee1bc3f6c16",
+      "params": {
+        "listId": "eea"
+      },
+      "paramsHash": "0xd1a00261a15d110c67ca5a36ae068c42b027dc55133b6344363eecda15289432",
+      "proofDigest": "0x3756685ffcee2b6c56b2efd2b316a10c0d940118e1fcb605660a7bc8634cfddf",
+      "proofPath": "proofs/country.bin",
+      "publicDigest": "0xe4e4faaee7669d5e204c3d5fc4f39585c6d63f60f400f6c13744a98a44006a05",
+      "publicInputs": {
+        "commitment": "0xa031f29170125eff77870198af45593acf02004c7a142be19375ccb028447adb",
+        "listId": "eea",
+        "setDepth": 5,
+        "setRoot": "0x2bc4dc54a457373e521626cf69795ff45ccc9a1a25cfc9e21afa1494e601df20"
+      }
+    },
+    {
+      "binding": {
+        "descriptor": {
+          "evidenceClass": "DOCUMENTARY",
+          "issuingParty": {
+            "identifier": "529900T8BM49AURSDO55",
+            "identifierScheme": "LEI",
+            "jurisdiction": "DE",
+            "name": "Example Bank AG"
+          },
+          "legalBasis": {
+            "assertion": "Subject is at or above the age of majority",
+            "framework": "NATIONAL",
+            "reference": "contractual capacity, age of majority"
+          }
+        },
+        "predicate": "ADULT",
+        "validity": {
+          "basisAsOf": 20776,
+          "from": 20776,
+          "until": 24425
+        }
+      },
+      "bindingDigest": "0x8b3aaa112604fa07e6b027b4c27aad3a7c664da8ee2a4a883c44622140d0befb",
+      "circuit": "age_threshold",
+      "circuitId": 1,
+      "commitment": "0xd50c3f14908979db133b3f41e680638a3e52574f7334922d5b6a26301831d456",
+      "disclosure": "predicate",
+      "fieldName": "dateOfBirth",
+      "leafHash": "0xa0afb4c842ff7e3fc9cbec261a6f43b97746465bb559f9f44018a5a9ce725fdc",
+      "params": {
+        "minAgeDays": 6570
+      },
+      "paramsHash": "0x9ffc234565695be53e736fda2efe71922997613433dccede49b58f1f2931d24c",
+      "proofDigest": "0xb5ad1d204248410e37b0fbd9206f94cb7ec8caf7c43b5d2a14739558ce409c1f",
+      "proofPath": "proofs/dateOfBirth.bin",
+      "publicDigest": "0x3c52279e920565f971a9b0b8745e5c013330da117fe48039e8416aeac4f001db",
+      "publicInputs": {
+        "commitment": "0xd50c3f14908979db133b3f41e680638a3e52574f7334922d5b6a26301831d456",
+        "currentEpochDays": 20776,
+        "minAgeDays": 6570
+      }
+    },
+    {
+      "binding": {
+        "descriptor": {
+          "evidenceClass": "DOCUMENTARY",
+          "issuingParty": {
+            "identifier": "529900T8BM49AURSDO55",
+            "identifierScheme": "LEI",
+            "jurisdiction": "DE",
+            "name": "Example Bank AG"
+          },
+          "legalBasis": {
+            "assertion": "Identifier of the identity document examined",
+            "framework": "AMLD5",
+            "reference": "Art. 13(1)(a), customer identification"
+          }
+        },
+        "validity": {
+          "basisAsOf": 20776,
+          "from": 20776,
+          "until": 21140
+        }
+      },
+      "bindingDigest": "0x9411773461683458569fc9e8fbfef93307c895a0bbad4c26e6daaa75b33847d8",
+      "circuit": "preimage_knowledge",
+      "circuitId": 4,
+      "commitment": "0x040dd88b2d187f03298aa7ebf04840f6424f6e1fa982802af847e33be332f50a",
+      "disclosure": "commitment_only",
+      "fieldName": "documentNumber",
+      "leafHash": "0xa1396aa37212b6a085be872da1f3df25c230860600102f3b376c5a7fff02cd06",
+      "params": {
+        "maxValueBytes": 128
+      },
+      "paramsHash": "0xb193f1053e91e8b367d8cc002673d6fc1279b1fcffcbfc603bf0ad68e9e7921a",
+      "proofDigest": "0x9f217d54845fd6a91843c3a56eacb50f9cd105f4eea6f59123f8bd2d963fc400",
+      "proofPath": "proofs/documentNumber.bin",
+      "publicDigest": "0xd81b6d5b34a67d5eea3f40a49b0785de1812ef71a14d811140a145b3697d1feb",
+      "publicInputs": {
+        "commitment": "0x040dd88b2d187f03298aa7ebf04840f6424f6e1fa982802af847e33be332f50a"
+      }
+    },
+    {
+      "binding": {
+        "descriptor": {
+          "evidenceClass": "DOCUMENTARY",
+          "issuingParty": {
+            "identifier": "529900T8BM49AURSDO55",
+            "identifierScheme": "LEI",
+            "jurisdiction": "DE",
+            "name": "Example Bank AG"
+          },
+          "legalBasis": {
+            "assertion": "Subject given name as recorded at onboarding",
+            "framework": "AMLD5",
+            "reference": "Art. 13(1)(a), customer identification"
+          }
+        },
+        "validity": {
+          "basisAsOf": 20776,
+          "from": 20776,
+          "until": 21140
+        }
+      },
+      "bindingDigest": "0xfbc790dc6864ab6ab3d00c09913d1debe0ab4556116f2e983828d65fa4744cbb",
+      "circuit": "preimage_knowledge",
+      "circuitId": 4,
+      "commitment": "0xcd9621d69ce7cc6df387bfc1d0c6798b09c287eedebe5da35f679b5770cd9b1f",
+      "disclosure": "commitment_only",
+      "fieldName": "firstName",
+      "leafHash": "0xb1dcbe6825a138325204ae364d95f055263b355d29ba904b200620b33e383757",
+      "params": {
+        "maxValueBytes": 128
+      },
+      "paramsHash": "0xb193f1053e91e8b367d8cc002673d6fc1279b1fcffcbfc603bf0ad68e9e7921a",
+      "proofDigest": "0x9f217d54845fd6a91843c3a56eacb50f9cd105f4eea6f59123f8bd2d963fc400",
+      "proofPath": "proofs/firstName.bin",
+      "publicDigest": "0x934591b478c481965c641bb53f84a4d6819bf709a8bd494139380e0333955339",
+      "publicInputs": {
+        "commitment": "0xcd9621d69ce7cc6df387bfc1d0c6798b09c287eedebe5da35f679b5770cd9b1f"
+      }
+    },
+    {
+      "binding": {
+        "descriptor": {
+          "evidenceClass": "DOCUMENTARY",
+          "issuingParty": {
+            "identifier": "529900T8BM49AURSDO55",
+            "identifierScheme": "LEI",
+            "jurisdiction": "DE",
+            "name": "Example Bank AG"
+          },
+          "legalBasis": {
+            "assertion": "Subject is categorised as a professional client",
+            "framework": "MiFID_II",
+            "reference": "Annex II Section I, professional clients"
+          }
+        },
+        "predicate": "INVESTOR_CLASS",
+        "validity": {
+          "basisAsOf": 20776,
+          "from": 20776,
+          "until": 21505
+        }
+      },
+      "bindingDigest": "0xa5d8d594b13237f3fc89e8e934d221e9ad59bff41f6c424b7ba94dac5a2ecdac",
+      "circuit": "tier_threshold",
+      "circuitId": 3,
+      "commitment": "0x7c206cd4f1bef80348a0738e1a57a64635a2913172da78d200c2dc567526b2c8",
+      "disclosure": "predicate",
+      "fieldName": "investorType",
+      "leafHash": "0xe034ffb0dae4e8ae9b924d8aa00e6e9058f2d545f8ed7b20cfaa8eab75d9d9e4",
+      "params": {
+        "minTier": 2
+      },
+      "paramsHash": "0x220c654c0a1b31f320c43f61cabc3ec404b817838d95bde1ad9c7041a8a12abd",
+      "proofDigest": "0xd224cd50467f6287c7043e5d9782ddbe7d301e0554f6c0a17b6a1ea386a511bf",
+      "proofPath": "proofs/investorType.bin",
+      "publicDigest": "0x775043bf1a4ac5339602e81caec6415fbb57c1d98d351c4d56f3db774cce18c9",
+      "publicInputs": {
+        "commitment": "0x7c206cd4f1bef80348a0738e1a57a64635a2913172da78d200c2dc567526b2c8",
+        "minTier": 2
+      }
+    }
+  ],
+  "lists": {
+    "eea": {
+      "root": "0x2bc4dc54a457373e521626cf69795ff45ccc9a1a25cfc9e21afa1494e601df20",
+      "sourceSha256": "0x765c3d1ff5339e523290ba110051c3e7bdbf82708d280fc20c22b7a6fdae3fdc"
+    }
+  },
+  "merkleVersion": 3,
+  "mode": "production",
+  "passthrough": {
+    "hardExpiryDays": 730,
+    "softExpiryDays": 365
+  },
+  "secretsKdfVersion": 2,
+  "stark": {
+    "field": "goldilocks",
+    "hash": "rescue-prime",
+    "library": "winterfell-0.13",
+    "libraryVersion": "0.13",
+    "securityBits": 100
+  },
+  "version": "3.1.0",
+  "walletAddress": "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01"
+}

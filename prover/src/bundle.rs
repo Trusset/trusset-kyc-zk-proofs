@@ -25,10 +25,20 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use trusset_bundle_format::attestation::AttestationFile;
+use trusset_bundle_format::disclosure::{Disclosure, DISCLOSURE_VERSION};
+use trusset_bundle_format::header::{
+    parse_address, signature_to_hex, ParsedHeader, MAX_LEAF_COUNT,
+};
 use trusset_bundle_format::manifest::{
-    canonical_disk_bytes, canonical_signing_bytes, Manifest, ToolchainBlock, CREATED_AT_SENTINEL,
+    canonical_disk_bytes, canonical_signing_bytes, is_v31, Manifest, ToolchainBlock,
+    CREATED_AT_SENTINEL,
+};
+use trusset_bundle_format::merkle::{
+    compute_root_v3_with_paths, root_from_path_v3, MERKLE_VERSION_V3,
 };
 use trusset_circuit_set_membership as set;
+use trusset_circuits_common::Digest;
 use trusset_circuits_common::{
     derive_deterministic_subject_key, derive_subject_seed, digest_to_hex, CIRCUITS_VERSION,
 };
@@ -129,9 +139,16 @@ pub fn build_subject_bundle_with_toolchain(
         proved.push(p);
     }
 
-    // 2. Merkle root over sorted leaf hashes (v2 construction).
+    // 2. Merkle root over sorted leaf hashes: v3 with inclusion paths for a
+    // 3.1.0 job, v2 otherwise.
     let leaf_hashes: Vec<_> = proved.iter().map(|p| p.leaf_hash).collect();
-    let (root, sorted_indices) = compute_root_v2(&leaf_hashes);
+    let v31 = is_v31(&job.version);
+    let (root, sorted_indices, paths) = if v31 {
+        compute_root_v3_with_paths(&leaf_hashes)
+    } else {
+        let (r, s) = compute_root_v2(&leaf_hashes);
+        (r, s, Vec::new())
+    };
     let kyc_hash_hex = digest_to_hex(&root);
 
     // 3. List roots needed by the manifest. A list-commitment file that
@@ -159,6 +176,21 @@ pub fn build_subject_bundle_with_toolchain(
     let sig_payload = canonical_signing_bytes(&manifest)?;
     let signature: [u8; SIGNATURE_LEN] = signing_key.sign(&sig_payload);
 
+    // 4b. v3.1: the signed header, one disclosure per leaf, and the
+    // attestation the issuer app turns into calldata.
+    let v31_files = if v31 {
+        Some(build_v31_files(
+            &manifest,
+            &root,
+            &sorted_indices,
+            &paths,
+            &subject.wallet_bytes()?,
+            signing_key,
+        )?)
+    } else {
+        None
+    };
+
     // 5. Encrypt secrets blob (per-leaf value + nonce + circuit name)
     // under the wrapped per-subject key.
     let secrets_json = build_secrets_blob(&proved)?;
@@ -180,6 +212,7 @@ pub fn build_subject_bundle_with_toolchain(
         &signature,
         &proved,
         &secrets_enc,
+        v31_files.as_ref(),
     )?;
 
     let leaf_timings = proved
@@ -303,6 +336,102 @@ pub fn check_list_commitments(job: &Job) -> Result<BTreeMap<String, String>> {
     Ok(list_roots)
 }
 
+/// The files a 3.1.0 bundle carries beyond the v3 set.
+pub struct V31Files {
+    pub header_json: Vec<u8>,
+    pub header_sig: [u8; SIGNATURE_LEN],
+    /// `(leaf name, disclosure JSON)` in manifest order.
+    pub disclosures: Vec<(String, Vec<u8>)>,
+    pub attestation_json: Vec<u8>,
+}
+
+/// Build and sign the header, write one disclosure per leaf, and derive the
+/// attestation. Every inclusion path is checked against the root before
+/// anything is written, so a bundle never ships a path that does not verify.
+pub fn build_v31_files(
+    manifest: &Manifest,
+    root: &Digest,
+    sorted_indices: &[usize],
+    paths: &[Vec<Digest>],
+    wallet: &[u8; 20],
+    signing_key: &SigningSecret,
+) -> Result<V31Files> {
+    let chain = manifest.chain.as_ref().ok_or_else(|| {
+        ProverError::new(
+            ErrorCode::ChainInvalid,
+            "a 3.1.0 manifest needs a chain block for its header",
+        )
+    })?;
+    let address = |name: &str, v: &str| {
+        parse_address(v).ok_or_else(|| {
+            ProverError::new(
+                ErrorCode::ChainInvalid,
+                format!("chain.{} is not 0x + 40 hex", name),
+            )
+        })
+    };
+    let leaf_count = u32::try_from(manifest.leaves.len())
+        .ok()
+        .filter(|n| *n >= 1 && *n <= MAX_LEAF_COUNT)
+        .ok_or_else(|| {
+            ProverError::input(format!(
+                "a 3.1.0 bundle holds 1..={} leaves, this one has {}",
+                MAX_LEAF_COUNT,
+                manifest.leaves.len()
+            ))
+        })?;
+    let parsed = ParsedHeader {
+        root: *root,
+        wallet: *wallet,
+        epoch_days: manifest.epoch_days,
+        attester: address("attester", &chain.attester)?,
+        chain_id: chain.chain_id,
+        hub: address("hub", &chain.hub)?,
+        key_id: chain.key_id,
+        merkle_version: MERKLE_VERSION_V3,
+        leaf_count,
+    };
+    let header = parsed.to_header();
+    header
+        .parse()
+        .map_err(|m| ProverError::new(ErrorCode::ChainInvalid, m))?;
+    let header_sig = signing_key.sign(&parsed.signing_bytes());
+    let mut header_json = header.to_json_bytes()?;
+    header_json.push(b'\n');
+
+    let mut disclosures = Vec::with_capacity(manifest.leaves.len());
+    for (i, entry) in manifest.leaves.iter().enumerate() {
+        let path = &paths[sorted_indices[i]];
+        let leaf_hash = trusset_circuits_common::hex_to_digest(&entry.leaf_hash)
+            .map_err(|_| ProverError::circuit_internal("leaf hash did not round-trip"))?;
+        if root_from_path_v3(&leaf_hash, path, u64::from(leaf_count)) != Some(*root) {
+            return Err(ProverError::circuit_internal(format!(
+                "inclusion path for {} does not rebuild the root",
+                entry.field_name
+            )));
+        }
+        let d = Disclosure {
+            version: DISCLOSURE_VERSION.to_string(),
+            header: header.clone(),
+            header_signature: signature_to_hex(&header_sig),
+            leaf: entry.clone(),
+            path: path.iter().map(digest_to_hex).collect(),
+        };
+        let mut bytes = d.to_json_bytes()?;
+        bytes.push(b'\n');
+        disclosures.push((entry.field_name.clone(), bytes));
+    }
+
+    let attestation = AttestationFile::from_manifest(manifest)
+        .map_err(|m| ProverError::new(ErrorCode::PredicateInvalid, m))?;
+    Ok(V31Files {
+        header_json,
+        header_sig,
+        disclosures,
+        attestation_json: attestation.to_json_bytes()?,
+    })
+}
+
 fn build_secrets_blob(proved: &[ProvedLeaf]) -> Result<Vec<u8>> {
     let mut entries: BTreeMap<String, SecretsEntry> = BTreeMap::new();
     for p in proved {
@@ -326,6 +455,7 @@ fn write_bundle(
     signature: &[u8; SIGNATURE_LEN],
     proved: &[ProvedLeaf],
     secrets_enc: &[u8],
+    v31_files: Option<&V31Files>,
 ) -> Result<PathBuf> {
     let wallet = &manifest.wallet_address;
     let tmp_root = output_root.join(".tmp");
@@ -368,6 +498,20 @@ fn write_bundle(
 
     // secrets.enc
     fs::write(tmp_dir.join("secrets.enc"), secrets_enc)?;
+
+    // v3.1: header.json, header.sig, disclosures/<leaf>.json, attestation.json
+    if let Some(files) = v31_files {
+        fs::write(tmp_dir.join("header.json"), &files.header_json)?;
+        fs::write(tmp_dir.join("header.sig"), files.header_sig.as_slice())?;
+        fs::create_dir_all(tmp_dir.join("disclosures"))?;
+        for (name, bytes) in &files.disclosures {
+            fs::write(
+                tmp_dir.join("disclosures").join(format!("{}.json", name)),
+                bytes,
+            )?;
+        }
+        fs::write(tmp_dir.join("attestation.json"), &files.attestation_json)?;
+    }
 
     // Atomic-ish rename: blow away any prior final dir, then rename.
     if final_dir.exists() {

@@ -9,6 +9,7 @@ pub mod commitment;
 pub mod domain;
 pub mod field;
 pub mod hash;
+pub mod proof_bytes;
 pub mod proof_options;
 pub mod rescue_air;
 pub mod seed;
@@ -18,8 +19,9 @@ pub mod stub_proof;
 pub use circuit_id::CircuitId;
 pub use commitment::{compute_commitment, NONCE_LEN};
 pub use domain::{
-    COMMITMENT_TAG, DOMAIN_TAG_BYTES, LEAF_BIND_TAG, LEAF_TAG, MERKLE_PAD_TAG, MERKLE_ROOT_TAG,
-    NODE_TAG, PROOF_DIGEST_TAG, PUBLIC_DIGEST_TAG, SET_LEAF_TAG, SET_NODE_TAG,
+    COMMITMENT_TAG, DOMAIN_TAG_BYTES, HEADER_SIGNING_TAG, LEAF_BIND_TAG, LEAF_TAG, MERKLE_PAD_TAG,
+    MERKLE_ROOT_TAG, MERKLE_ROOT_V3_TAG, NODE_TAG, PROOF_DIGEST_TAG, PUBLIC_DIGEST_TAG,
+    SET_LEAF_TAG, SET_NODE_TAG,
 };
 pub use field::{
     bytes_to_field, field_to_bytes, nfc_canonicalize, string_to_field_canonical, Felt,
@@ -28,6 +30,7 @@ pub use hash::{
     hash_bytes_with_tag, hash_elements, hash_felts_with_tag, hash_two, hash_two_with_tag,
     rescue_merge_raw, Digest, DIGEST_LEN_BYTES, DIGEST_LEN_FELTS,
 };
+pub use proof_bytes::is_canonical_proof_bytes;
 pub use proof_options::{
     conjectured_security_bits, stark_options, MAX_SET_VALUE_BYTES_PADDED,
     MAX_WORKSPACE_TRACE_LENGTH, STARK_BLOWUP_FACTOR, STARK_FRI_FOLDING_FACTOR,

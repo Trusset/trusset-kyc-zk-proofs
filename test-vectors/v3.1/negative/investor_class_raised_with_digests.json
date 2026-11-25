@@ -1,0 +1,63 @@
+{
+  "header": {
+    "attester": "0x1111111111111111111111111111111111111111",
+    "chainId": 11155111,
+    "epochDays": 20776,
+    "hub": "0x2222222222222222222222222222222222222222",
+    "keyId": 1,
+    "leafCount": 5,
+    "merkleVersion": 3,
+    "root": "0x744025bd383f75bfbd5b55504233c87acc27aea55707efb3cf865752e71cc7ab",
+    "version": "3.1.0",
+    "wallet": "0xabcdef0123456789abcdef0123456789abcdef01"
+  },
+  "headerSignature": "0x1344dea51d3f678e8308d9bdae1071af766c822a1a93b0a84bb04a37d527275a2ae61d21ce5d37b4341c0bc4c1c54f07defe4700f9072265ffff55b12746d906",
+  "leaf": {
+    "binding": {
+      "descriptor": {
+        "evidenceClass": "DOCUMENTARY",
+        "issuingParty": {
+          "identifier": "529900T8BM49AURSDO55",
+          "identifierScheme": "LEI",
+          "jurisdiction": "DE",
+          "name": "Example Bank AG"
+        },
+        "legalBasis": {
+          "assertion": "Subject is categorised as a professional client",
+          "framework": "MiFID_II",
+          "reference": "Annex II Section I, professional clients"
+        }
+      },
+      "predicate": "INVESTOR_CLASS",
+      "validity": {
+        "basisAsOf": 20776,
+        "from": 20776,
+        "until": 21505
+      }
+    },
+    "bindingDigest": "0xa5d8d594b13237f3fc89e8e934d221e9ad59bff41f6c424b7ba94dac5a2ecdac",
+    "circuit": "tier_threshold",
+    "circuitId": 3,
+    "commitment": "0x7c206cd4f1bef80348a0738e1a57a64635a2913172da78d200c2dc567526b2c8",
+    "disclosure": "predicate",
+    "fieldName": "investorType",
+    "leafHash": "0xe034ffb0dae4e8ae9b924d8aa00e6e9058f2d545f8ed7b20cfaa8eab75d9d9e4",
+    "params": {
+      "minTier": 3
+    },
+    "paramsHash": "0x21fee3ead6d5f59e3db71465c0c659ba5259c2630db3a2c6b6d9b6af363e8edd",
+    "proofDigest": "0xd224cd50467f6287c7043e5d9782ddbe7d301e0554f6c0a17b6a1ea386a511bf",
+    "proofPath": "proofs/investorType.bin",
+    "publicDigest": "0x2a4cc6b6cbbd0a0f763907e4061c312905cc25c05995ddbe2c35e1775882f52a",
+    "publicInputs": {
+      "commitment": "0x7c206cd4f1bef80348a0738e1a57a64635a2913172da78d200c2dc567526b2c8",
+      "minTier": 3
+    }
+  },
+  "path": [
+    "0x84095397e18c43b49e540e1b67fd0bf5b19f3242a76fe754e4a393bbca3481e2",
+    "0xe859b0900ea7569dbdf81dde310229a282e91e35be67c2279284fa3b1169d8ad",
+    "0x0a44369f1b2e779ea36366986b6abc8fb3a389f84619978dcf9674b5a2a7546e"
+  ],
+  "version": "3.1.0"
+}

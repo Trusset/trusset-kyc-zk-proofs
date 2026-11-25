@@ -1,10 +1,11 @@
 //! `trusset-prover` binary entrypoint.
 //!
 //! Reads a JSON job spec from stdin, emits NDJSON events to stdout, writes
-//! per-subject bundles to disk. Env vars:
+//! per-subject bundles to disk. Key material, see `keys.rs`:
 //!
-//!   - `TRUSSET_KYC_MASTER_KEY`   (required, 32-byte hex)
-//!   - `TRUSSET_KYC_SIGNING_KEY`  (required, 32-byte hex)
+//!   - from the CLI on the first stdin line when `TRUSSET_KYC_KEYS_STDIN=1`
+//!     (the operator path: encrypted key file or macOS keychain), or
+//!   - `TRUSSET_KYC_MASTER_KEY` / `TRUSSET_KYC_SIGNING_KEY` (CI only).
 //!
 //! Exit codes: 0 ok, 2 partial (≥1 subject failed), 1 batch-aborting
 //! (env / config / parse error).
@@ -20,12 +21,12 @@ use trusset_prover::{
     errors::{ErrorCode, ProverError, Result},
     io::{Event, EventStream},
     job::{parse_config_hash, Job},
+    keys::{take_stdin_keys, StdinKeys},
     rekey::rekey_bundle,
     sign::SigningSecret,
 };
 
 const ENV_MASTER_KEY: &str = "TRUSSET_KYC_MASTER_KEY";
-const ENV_SIGNING_KEY: &str = "TRUSSET_KYC_SIGNING_KEY";
 const ENV_NEW_MASTER_KEY: &str = "TRUSSET_KYC_NEW_MASTER_KEY";
 
 fn main() {
@@ -59,6 +60,13 @@ fn run() -> i32 {
         eprintln!("[prover] fatal: stdin: {}", e);
         return 1;
     }
+    let mut stdin_keys = match take_stdin_keys(&mut stdin) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("[prover] fatal: {}", e);
+            return 1;
+        }
+    };
 
     let job = match Job::parse_from_slice(stdin.as_bytes()) {
         Ok(j) => j,
@@ -104,7 +112,7 @@ fn run() -> i32 {
         return run_dry(&job, &mut events);
     }
 
-    let (master_key, signing_key) = match load_keys() {
+    let (master_key, signing_key) = match load_keys(&mut stdin_keys) {
         Ok(k) => k,
         Err(e) => {
             eprintln!("[prover] fatal: {}", e);
@@ -375,36 +383,10 @@ fn load_master_key(env_name: &str) -> Result<[u8; 32]> {
     Ok(out)
 }
 
-fn load_keys() -> Result<([u8; 32], SigningSecret)> {
-    let master_hex = std::env::var(ENV_MASTER_KEY).map_err(|_| {
-        ProverError::new(
-            ErrorCode::KeyMissing,
-            format!("env var {} is required (32-byte hex)", ENV_MASTER_KEY),
-        )
-    })?;
-    let signing_hex = std::env::var(ENV_SIGNING_KEY).map_err(|_| {
-        ProverError::new(
-            ErrorCode::KeyMissing,
-            format!("env var {} is required (32-byte hex)", ENV_SIGNING_KEY),
-        )
-    })?;
-
-    let master_bytes = hex::decode(master_hex.trim().trim_start_matches("0x"))
-        .map_err(|_| ProverError::new(ErrorCode::KeyMalformed, "master key is not hex"))?;
-    if master_bytes.len() != 32 {
-        return Err(ProverError::new(
-            ErrorCode::KeyMalformed,
-            format!(
-                "master key must be 32 bytes (64 hex chars), got {}",
-                master_bytes.len()
-            ),
-        ));
-    }
-    let mut master = [0u8; 32];
-    master.copy_from_slice(&master_bytes);
-
-    let signing = SigningSecret::from_hex(&signing_hex)?;
-    Ok((master, signing))
+fn load_keys(keys: &mut StdinKeys) -> Result<([u8; 32], SigningSecret)> {
+    let master = keys.master_key()?;
+    let signing = keys.signing_key()?;
+    Ok((*master, signing))
 }
 
 /// Produce a deterministic-format ISO 8601 timestamp at second granularity.

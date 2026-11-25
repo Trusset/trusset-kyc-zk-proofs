@@ -213,6 +213,11 @@ pub struct LeafBinding {
         skip_serializing_if = "Option::is_none"
     )]
     pub list_version: Option<ListVersionRef>,
+    /// v3.1: the predicate this leaf proves, from the hub's predicate table
+    /// (`crate::predicates`). Absent on v3.0 leaves, which keeps their binding
+    /// digest unchanged, and on leaves that prove no table predicate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicate: Option<String>,
 }
 
 /// Canonical bytes of a binding block: compact JSON with keys sorted at every
@@ -262,6 +267,7 @@ mod tests {
                 basis_as_of: 20690,
             },
             list_version: None,
+            predicate: None,
         }
     }
 
@@ -320,6 +326,22 @@ mod tests {
             content_hash: format!("0x{}", "bb".repeat(32)),
         });
         assert_ne!(base, compute_binding_digest(&b).unwrap());
+    }
+
+    #[test]
+    fn predicate_changes_the_digest_and_absence_keeps_the_v3_bytes() {
+        let base = binding();
+        let text = String::from_utf8(binding_canonical_bytes(&base).unwrap()).unwrap();
+        assert!(!text.contains("predicate"));
+        let mut adult = binding();
+        adult.predicate = Some("ADULT".to_string());
+        let mut eea = binding();
+        eea.predicate = Some("EEA_RESIDENT".to_string());
+        let d0 = compute_binding_digest(&base).unwrap();
+        let d1 = compute_binding_digest(&adult).unwrap();
+        let d2 = compute_binding_digest(&eea).unwrap();
+        assert_ne!(d0, d1);
+        assert_ne!(d1, d2);
     }
 
     #[test]

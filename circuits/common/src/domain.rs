@@ -53,6 +53,16 @@ pub const MERKLE_ROOT_TAG: [u8; DOMAIN_TAG_BYTES] = pad32("TRUSSET-KYC-V2:MERKLE
 /// carrying no binding block hashes exactly as it did under v2, so bundles
 /// issued before v3 keep their leaf hashes, their root, and their signature.
 pub const LEAF_BIND_TAG: [u8; DOMAIN_TAG_BYTES] = pad32("TRUSSET-KYC-V3:LEAF-BIND");
+/// Tag for the v3 Merkle root wrap (`merkleVersion: 3`, manifest 3.1.0):
+/// `root = Rescue(MERKLE_ROOT_V3_TAG ‖ inner_root ‖ leaf_count_le8 ‖ arity_u8)`.
+/// The tree below the wrap is the v2 tree. A separate tag keeps a v3 root
+/// from ever equalling a v2 root over the same leaves, so a root names its
+/// construction.
+pub const MERKLE_ROOT_V3_TAG: [u8; DOMAIN_TAG_BYTES] = pad32("TRUSSET-KYC-V3:MERKLE-ROOT");
+/// Prefix of the bytes the operator key signs for a v3.1 header. Not a
+/// Rescue tag: it separates the header signature from the manifest
+/// signature, which signs JSON, so neither can be presented as the other.
+pub const HEADER_SIGNING_TAG: [u8; DOMAIN_TAG_BYTES] = pad32("TRUSSET-KYC-V3.1:HEADER");
 
 /// Const-context inequality for two 32-byte arrays.
 const fn const_ne(a: &[u8; DOMAIN_TAG_BYTES], b: &[u8; DOMAIN_TAG_BYTES]) -> bool {
@@ -66,7 +76,7 @@ const fn const_ne(a: &[u8; DOMAIN_TAG_BYTES], b: &[u8; DOMAIN_TAG_BYTES]) -> boo
     false
 }
 
-// All C(10,2) = 45 pairs. Adding a new tag requires extending this block.
+// All C(12,2) = 66 pairs. Adding a new tag requires extending this block.
 const_assert!(const_ne(&LEAF_TAG, &NODE_TAG));
 const_assert!(const_ne(&LEAF_TAG, &PUBLIC_DIGEST_TAG));
 const_assert!(const_ne(&LEAF_TAG, &PROOF_DIGEST_TAG));
@@ -112,6 +122,27 @@ const_assert!(const_ne(&SET_NODE_TAG, &LEAF_BIND_TAG));
 const_assert!(const_ne(&COMMITMENT_TAG, &LEAF_BIND_TAG));
 const_assert!(const_ne(&MERKLE_PAD_TAG, &LEAF_BIND_TAG));
 const_assert!(const_ne(&MERKLE_ROOT_TAG, &LEAF_BIND_TAG));
+const_assert!(const_ne(&LEAF_TAG, &MERKLE_ROOT_V3_TAG));
+const_assert!(const_ne(&NODE_TAG, &MERKLE_ROOT_V3_TAG));
+const_assert!(const_ne(&PUBLIC_DIGEST_TAG, &MERKLE_ROOT_V3_TAG));
+const_assert!(const_ne(&PROOF_DIGEST_TAG, &MERKLE_ROOT_V3_TAG));
+const_assert!(const_ne(&SET_LEAF_TAG, &MERKLE_ROOT_V3_TAG));
+const_assert!(const_ne(&SET_NODE_TAG, &MERKLE_ROOT_V3_TAG));
+const_assert!(const_ne(&COMMITMENT_TAG, &MERKLE_ROOT_V3_TAG));
+const_assert!(const_ne(&MERKLE_PAD_TAG, &MERKLE_ROOT_V3_TAG));
+const_assert!(const_ne(&MERKLE_ROOT_TAG, &MERKLE_ROOT_V3_TAG));
+const_assert!(const_ne(&LEAF_BIND_TAG, &MERKLE_ROOT_V3_TAG));
+const_assert!(const_ne(&LEAF_TAG, &HEADER_SIGNING_TAG));
+const_assert!(const_ne(&NODE_TAG, &HEADER_SIGNING_TAG));
+const_assert!(const_ne(&PUBLIC_DIGEST_TAG, &HEADER_SIGNING_TAG));
+const_assert!(const_ne(&PROOF_DIGEST_TAG, &HEADER_SIGNING_TAG));
+const_assert!(const_ne(&SET_LEAF_TAG, &HEADER_SIGNING_TAG));
+const_assert!(const_ne(&SET_NODE_TAG, &HEADER_SIGNING_TAG));
+const_assert!(const_ne(&COMMITMENT_TAG, &HEADER_SIGNING_TAG));
+const_assert!(const_ne(&MERKLE_PAD_TAG, &HEADER_SIGNING_TAG));
+const_assert!(const_ne(&MERKLE_ROOT_TAG, &HEADER_SIGNING_TAG));
+const_assert!(const_ne(&LEAF_BIND_TAG, &HEADER_SIGNING_TAG));
+const_assert!(const_ne(&MERKLE_ROOT_V3_TAG, &HEADER_SIGNING_TAG));
 
 #[cfg(test)]
 mod tests {
@@ -130,6 +161,8 @@ mod tests {
             &MERKLE_PAD_TAG,
             &MERKLE_ROOT_TAG,
             &LEAF_BIND_TAG,
+            &MERKLE_ROOT_V3_TAG,
+            &HEADER_SIGNING_TAG,
         ] {
             assert_eq!(tag.len(), 32);
         }
@@ -150,6 +183,8 @@ mod tests {
             ("MERKLE-PAD", MERKLE_PAD_TAG),
             ("MERKLE-ROOT", MERKLE_ROOT_TAG),
             ("LEAF-BIND", LEAF_BIND_TAG),
+            ("MERKLE-ROOT-V3", MERKLE_ROOT_V3_TAG),
+            ("HEADER", HEADER_SIGNING_TAG),
         ];
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
@@ -183,5 +218,7 @@ mod tests {
             assert!(tag.starts_with(b"TRUSSET-KYC-V2:"));
         }
         assert!(LEAF_BIND_TAG.starts_with(b"TRUSSET-KYC-V3:"));
+        assert!(MERKLE_ROOT_V3_TAG.starts_with(b"TRUSSET-KYC-V3:"));
+        assert!(HEADER_SIGNING_TAG.starts_with(b"TRUSSET-KYC-V3.1:"));
     }
 }

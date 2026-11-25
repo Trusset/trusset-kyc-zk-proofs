@@ -32,6 +32,7 @@ export function computeParamsHash(
   field: string,
   predicate: PredicateSpec,
   rc: ResolvedConfig,
+  subjectTier?: number,
 ): string {
   switch (predicate.circuit) {
     // `commitment_only` leaves reuse the preimage_knowledge parameter
@@ -45,7 +46,7 @@ export function computeParamsHash(
       );
     }
     case 'tier_threshold': {
-      const minTier = resolveTier(predicate.params.minTier, rc);
+      const minTier = resolveTier(predicate.params.minTier, rc, subjectTier);
       return sha256(
         tagPlus('trusset-kyc-v2:tier_threshold:params', Buffer.from([minTier])),
       );
@@ -71,12 +72,22 @@ export function computeParamsHash(
 
 // ============================ helpers ============================
 
-function resolveTier(minTier: string | number, rc: ResolvedConfig): number {
+/**
+ * A tier floor as a number. `ATTESTED` is the subject's own class and needs
+ * `subjectTier`.
+ */
+export function resolveTier(minTier: string | number, rc: ResolvedConfig, subjectTier?: number): number {
   if (typeof minTier === 'number') return minTier;
+  if (minTier === 'ATTESTED') {
+    if (subjectTier === undefined) {
+      throw new Error('minTier "ATTESTED" is resolved per subject; no subject tier was given');
+    }
+    return subjectTier;
+  }
   const upper = minTier.toUpperCase();
   const value = (rc.tiers as Record<string, number | undefined>)[upper];
   if (value === undefined) {
-    throw new Error(`unknown tier name "${minTier}" — must be one of ${Object.keys(rc.tiers).join(', ')}`);
+    throw new Error(`unknown tier name "${minTier}": must be one of ${Object.keys(rc.tiers).join(', ')}`);
   }
   return value;
 }

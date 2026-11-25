@@ -6,7 +6,10 @@ Each of the four circuits is a self-contained Cargo crate under
 `verify`), which means the prover binary dispatches each leaf without
 knowing the specific circuit - only the circuit ID byte.
 
-## Status disclosure (v2.1.0)
+## Status disclosure (v2.1.0, unchanged in v3.1.0)
+
+**Proofs are sound but not zero-knowledge.** A predicate proof discloses the
+value it is about (docs/SECURITY.md, "What a proof reveals").
 
 **Trusset KYC v2.1 ships real Winterfell STARK proofs by default.** The
 workspace default features are `prod-proofs-*` and `manifest.mode`
@@ -350,7 +353,27 @@ processing the same subject get the same Merkle tree shape.
 
 ## Merkle root construction (spec §8)
 
-Two constructions exist, selected by `manifest.merkleVersion`.
+Three constructions exist, selected by `manifest.merkleVersion`.
+
+**Version 3 (manifest 3.1.0 only):** the version 2 tree below, with the wrap
+under its own tag and an inclusion path for every leaf:
+
+```text
+root = Rescue(MERKLE_ROOT_V3_TAG ‖ inner_root ‖ leaf_count_le8 ‖ 0x02)
+MERKLE_ROOT_V3_TAG = "TRUSSET-KYC-V3:MERKLE-ROOT" padded with '-' to 32 bytes
+
+path = siblings from the padded leaf layer up to the inner root,
+       tree_depth(leaf_count) = log2(max(2, next_pow2(leaf_count))) of them
+
+node = leaf_hash
+for s in path: node = Rescue(NODE_TAG ‖ min(node, s) ‖ max(node, s))
+root == Rescue(MERKLE_ROOT_V3_TAG ‖ node ‖ leaf_count_le8 ‖ 0x02)
+```
+
+Pairs are merged smaller first, so a path carries no direction bits. Its
+length is fixed by the signed `leafCount`, so an inner node cannot be
+presented as a leaf, and a padding leaf cannot be disclosed because the
+verifier recomputes the leaf hash from the leaf's own fields.
 
 **Version 2 (absent field means version 1; v2 is the v2.1.0 default):**
 
@@ -432,6 +455,108 @@ bash scripts/ci_smoke.sh           # full back-to-back sweep
 bash scripts/ci_smoke.sh --quick   # default-features only
 ```
 
+## What v3.1 added
+
+v3.1 changes nothing inside any circuit: `CIRCUITS_VERSION` stays 3 and
+Winterfell 0.13 has no zero-knowledge mode (see docs/SECURITY.md, "What a
+proof reveals"). It changes what a bundle is bound to and how much of it has
+to be shown.
+
+### Leaf predicates
+
+A 3.1.0 binding block carries `predicate`, the hub predicate the leaf proves.
+It is part of `canonical_json(binding)`, so of the binding digest, the leaf
+hash, and the root. A v3.0 binding has no `predicate` key and hashes as before.
+
+| Predicate | Hub bit | Leaf | Rule |
+|---|---|---|---|
+| `ADULT` | 4 | `age_threshold` | `minAgeDays >= 6570` |
+| `EEA_RESIDENT` | 5 | `set_membership` | list `eea` |
+| `RESIDENCY_ON_FILE` | 8 | `set_membership` | any recorded list |
+| `CITIZENSHIP_ON_FILE` | 9 | `set_membership` | any recorded list |
+| `TAX_RESIDENCY_ON_FILE` | 10 | `set_membership` | any recorded list |
+| `ACCREDITED` | 11 | `tier_threshold` | `minTier >= 2` |
+| `INVESTOR_CLASS` | none | `tier_threshold` | `minTier` in 1..3 is the attestation's `investorClass` |
+
+`KYC_DONE` (bit 0) is set on every 3.1.0 attestation. `AML_CLEAR`,
+`SANCTIONS_CLEAR`, `PEP_CLEAR`, `NOT_US_PERSON`, and `CONTRACT_HOLDER` are the
+attester's own statements: no circuit proves them, so no leaf may claim them.
+A `commitment_only` leaf carries no predicate. Each 3.1.0 bundle has exactly
+one `INVESTOR_CLASS` leaf, proved with `minTier` equal to the subject's own
+class (`"minTier": "ATTESTED"` in config).
+
+### The signed header
+
+`header.json` is signed by the operator key over 155 fixed bytes, equal to
+Solidity's `abi.encodePacked` of the same fields:
+
+```text
+"TRUSSET-KYC-V3.1:HEADER" padded with '-' to 32 bytes
+‖ 0x03 0x01 0x00            version 3.1.0
+‖ root (32)                 kycHash, big-endian per limb
+‖ wallet (20)
+‖ epochDays (u64 BE)
+‖ attester (20)
+‖ chainId (u64 BE)
+‖ hub (20)
+‖ keyId (u32 BE)            the hub's operatorKeyAt(attester, keyId)
+‖ merkleVersion (u32 BE)    3
+‖ leafCount (u32 BE)
+```
+
+Every field is checked before signing and before verifying: lowercase
+canonical root, non-zero wallet, attester and hub, positive chainId and
+epochDays, keyId at least 1, merkleVersion 3, leafCount 1..=256. The same four
+chain values sit in the manifest's `chain` block, so the manifest signature
+covers them too.
+
+### Single-leaf disclosure
+
+`disclosures/<leaf>.json`:
+
+```json
+{
+  "version": "3.1.0",
+  "header": { "...": "the signed header" },
+  "headerSignature": "0x<128 hex>",
+  "leaf": { "...": "the leaf entry exactly as in manifest.leaves[]" },
+  "path": ["0x<64 hex>", "..."]
+}
+```
+
+with the proof in `proofs/<leaf>.bin`. `verify_disclosure` checks, in order:
+the document parses strictly; the header signature under the given operator
+key; the wallet, when the caller names one; the leaf (canonical proof bytes,
+`publicDigest` recomputed from `publicInputs`, binding digest, list version
+against `setRoot`, `params` against `publicInputs`, `paramsHash`, predicate
+against circuit and parameters, an age leaf's `currentEpochDays` against the
+header's `epochDays`); the leaf hash under the header's wallet and epochDays;
+the path to the header root; the STARK, under circuitsVersion 3 because the
+header version says so.
+
+### `attestation.json`
+
+```json
+{
+  "version": "3.1.0",
+  "subject": "0x<wallet, lowercase>",
+  "root": "0x<kycHash>",
+  "investorClass": 2,
+  "predicates": "817",
+  "predicateNames": ["KYC_DONE", "ADULT", "EEA_RESIDENT", "RESIDENCY_ON_FILE", "CITIZENSHIP_ON_FILE"],
+  "softExpiry": 1826582400,
+  "hardExpiry": 1858118400,
+  "attester": "0x...",
+  "chainId": 11155111,
+  "hub": "0x...",
+  "keyId": 1
+}
+```
+
+`predicates` is a decimal `uint128`. Expiries are unix seconds,
+`(epochDays + days) * 86400`, or 0 for none. Every value derives from the
+signed manifest; `attestation_from_manifest` recomputes it.
+
 ## What v3 added, and what it did not
 
 v3 changed **nothing inside any circuit**. The four AIRs, the felt-level
@@ -446,8 +571,8 @@ What changed is what each leaf records about the statement it is making.
 
 ### The binding digest
 
-A v3 leaf carries a `binding` block — a claim descriptor, a validity interval,
-and for `set_membership` a list-version reference — hashed into
+A v3 leaf carries a `binding` block, a claim descriptor, a validity interval,
+and for `set_membership` a list-version reference, hashed into
 
 ```text
 binding_digest = Rescue(TRUSSET-KYC-V3:LEAF-BIND ‖ canonical_json(binding))
@@ -489,7 +614,7 @@ descriptor.evidenceRef    optional operator-side case reference
 `evidenceClass` is a labelled taxonomy, not a scale: `SELF_ATTESTED`,
 `DOCUMENTARY`, `THIRD_PARTY_RELIANCE`, `AUTHORITATIVE_SOURCE`,
 `CRYPTOGRAPHIC`, `PHYSICAL_PRESENCE`. Nothing in the codebase compares two of
-them and no predicate accepts an evidence-class threshold — deliberately, so
+them and no predicate accepts an evidence-class threshold, deliberately, so
 it does not become another anonymous integer like `minTier: 2` was.
 
 `issuingParty` defaults to the bundle issuer. A different party is for
@@ -509,7 +634,7 @@ staleness a reviewer wants to see, so it is recorded rather than assumed zero.
 
 None of this is proved in any circuit. A validity interval is a signed
 assertion by the issuer about the window over which it stands behind a claim,
-exactly as `softExpiryDays` always was — the difference is that it is bound
+exactly as `softExpiryDays` always was, the difference is that it is bound
 into the root, it names a real date rather than a day count from an unstated
 origin, and something evaluates it.
 
@@ -522,8 +647,8 @@ metadata, and v3 does not change it.
 
 The tiers are the MiFID II client-categorisation set, which v3 says out loud
 in the descriptor rather than leaving `minTier: 2` to be guessed at. The
-ordering is sound for the predicate the circuit proves — a sophistication
-floor — with three limits worth stating so a reviewer does not have to derive
+ordering is sound for the predicate the circuit proves, a sophistication
+floor, with three limits worth stating so a reviewer does not have to derive
 them:
 
 - A per-se professional and one who opted up under Annex II §II.1 are both

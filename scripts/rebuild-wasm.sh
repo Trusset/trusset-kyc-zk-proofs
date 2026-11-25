@@ -103,10 +103,12 @@ grep -oE '^(module\.exports\.|exports\.)[a-zA-Z_0-9]+' "$OUT_DIR/trusset_verifie
 # The issuer backend's check ladder depends on these by name. A rename or
 # a dropped export breaks it at runtime rather than at build time, so fail
 # here instead.
-# v3 adds verify_as_of, binding_digest_hex, and leaf_hash_hex_bound. The
-# pre-v3 exports are unchanged and still required: a backend that has not
-# been updated keeps working against them.
-REQUIRED_EXPORTS="proof_digest_hex public_digest_hex leaf_hash_hex merkle_root_hex merkle_root_hex_v manifest_signing_bytes verify_manifest_signature verify_leaf_stark verify_as_of binding_digest_hex leaf_hash_hex_bound"
+# v3 adds verify_as_of, binding_digest_hex, and leaf_hash_hex_bound. v3.1
+# adds verify_disclosure, verify_with_header, header_signing_bytes,
+# verify_header_signature, merkle_root_from_path_hex, and
+# attestation_from_manifest. The earlier exports are unchanged and still
+# required: a backend that has not been updated keeps working against them.
+REQUIRED_EXPORTS="proof_digest_hex public_digest_hex leaf_hash_hex merkle_root_hex merkle_root_hex_v manifest_signing_bytes verify_manifest_signature verify_leaf_stark verify_as_of binding_digest_hex leaf_hash_hex_bound verify_disclosure verify_with_header header_signing_bytes verify_header_signature merkle_root_from_path_hex attestation_from_manifest"
 for name in $REQUIRED_EXPORTS; do
     grep -qE "^(module\.exports\.|exports\.)${name}\b" "$OUT_DIR/trusset_verifier.js" \
         || { err "required export missing from the build: ${name}"; exit 1; }

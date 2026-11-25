@@ -56,6 +56,14 @@ pub enum ErrorCode {
     /// The batch ran against an unpinned wall-clock epoch without the explicit
     /// development flag.
     UnpinnedEpoch,
+    /// A 3.1.0 job has no chain block, or its attester, chain id, hub, or key
+    /// id is unusable.
+    ChainInvalid,
+    /// A leaf names a predicate that is not in the table, that no circuit
+    /// proves, or that its circuit and parameters do not establish.
+    PredicateInvalid,
+    /// A 3.1.0 job tried to carry a personal value in clear text.
+    PassthroughRefused,
 }
 
 impl ErrorCode {
@@ -82,6 +90,9 @@ impl ErrorCode {
             ErrorCode::ValidityInvalid => "E_VALIDITY_INVALID",
             ErrorCode::ListVersionMismatch => "E_LIST_VERSION_MISMATCH",
             ErrorCode::UnpinnedEpoch => "E_UNPINNED_EPOCH",
+            ErrorCode::ChainInvalid => "E_CHAIN_INVALID",
+            ErrorCode::PredicateInvalid => "E_PREDICATE_INVALID",
+            ErrorCode::PassthroughRefused => "E_PASSTHROUGH_REFUSED",
         }
     }
 }
@@ -179,6 +190,9 @@ mod tests {
         (ErrorCode::ValidityInvalid, "E_VALIDITY_INVALID"),
         (ErrorCode::ListVersionMismatch, "E_LIST_VERSION_MISMATCH"),
         (ErrorCode::UnpinnedEpoch, "E_UNPINNED_EPOCH"),
+        (ErrorCode::ChainInvalid, "E_CHAIN_INVALID"),
+        (ErrorCode::PredicateInvalid, "E_PREDICATE_INVALID"),
+        (ErrorCode::PassthroughRefused, "E_PASSTHROUGH_REFUSED"),
     ];
 
     #[test]
@@ -241,6 +255,9 @@ mod tests {
                 ErrorCode::ValidityInvalid => {}
                 ErrorCode::ListVersionMismatch => {}
                 ErrorCode::UnpinnedEpoch => {}
+                ErrorCode::ChainInvalid => {}
+                ErrorCode::PredicateInvalid => {}
+                ErrorCode::PassthroughRefused => {}
             }
         }
         // Force evaluation against ALL_CODES so the two stay in sync.
@@ -248,7 +265,7 @@ mod tests {
             assert_covered(code.clone());
         }
         // The list length must match the enum size. Update both together.
-        assert_eq!(ALL_CODES.len(), 21);
+        assert_eq!(ALL_CODES.len(), 24);
     }
 
     #[test]

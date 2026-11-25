@@ -1,7 +1,8 @@
 # Performance
 
-Every number below was measured on the machine described under "Hardware",
-against the v3.0.0 code as shipped. Nothing is projected or extrapolated, and
+Every number below was measured on the machine described under "Hardware".
+The "v3.1" section is the v3.1.0 code; the sections after it are the v3.0.0
+measurements, which v3.1 does not change (the circuits are the same). Nothing is projected or extrapolated, and
 each figure has a reproduction command next to it.
 
 ## Hardware
@@ -33,6 +34,40 @@ the same table describing the machine as arm64 without noting the translation;
 that was wrong and is corrected here. Check your own host triple before
 comparing.
 
+## v3.1: a typical bundle
+
+The 3.1.0 template that `npm run init -- --chain-id ... --hub ... --attester ...`
+writes (`config.example.v3.1.json`): 10 leaves for an EEA resident, 9 for anyone
+else (the `EEA_RESIDENT` leaf is optional). Proving leaves: 4 `set_membership`
+(EEA, residency allowlist, nationality, document issuer), 1 `age_threshold`,
+1 `tier_threshold`; 4 `commitment_only`. Release build, same host and Rosetta
+caveat as below.
+
+| Operation | Time |
+|---|---|
+| Prove one subject, 10 leaves (sum of leaf times, from `audit.log`) | 5.27 s (`set_membership` 1.2 to 1.4 s each, age 67 ms, tier 149 ms) |
+| Prove one subject, 9 leaves (non-EEA) | 4.70 s |
+| `npm run issue`, 2 subjects, end to end including Node start and key-file unlock | 10 s |
+| Header, 10 disclosures, and `attestation.json` per subject | under 5 ms |
+| Native whole-bundle verify with header (`trusset-verifier-cli`, process wall clock) | 0.05 s |
+| Native single-leaf disclosure verify (process wall clock) | 0.01 to 0.02 s |
+| WASM in Node, whole bundle with header, 6 STARKs (`verify_with_header`, p50 of 7) | 387 ms |
+| WASM in Node, `verify_disclosure`, p50 of 9 | `set_membership` 81 ms, `age_threshold` 32 ms, `tier_threshold` 26 ms, `commitment_only` 0.7 ms |
+| Key-file unlock (scrypt N = 2^17, r = 8, Node) | 0.17 s |
+
+| Artifact (10-leaf subject) | Size |
+|---|---|
+| Bundle on disk | 332 KB, of which proofs 248 KB |
+| `manifest.json` | 19.2 KB |
+| `header.json` / `header.sig` | 378 B / 64 B |
+| One disclosure (`disclosures/country.json`) | 2.8 KB, plus its 50 KB proof |
+| `attestation.json` | 544 B |
+
+```bash
+cargo test -p trusset-verifier --release --test v31_vectors
+node --test tests/wasm/
+```
+
 ## Per-circuit proving and verification
 
 Methodology: `tests/perf_bench.rs` in each circuit crate, 5 iterations, p50
@@ -60,7 +95,7 @@ which applied to those numbers too and was not stated.
 `set_membership` is the most expensive circuit by a wide margin: its trace is
 2048 rows because the Merkle walk runs in-AIR at 30 rows per level.
 
-`tier_threshold` remains the outlier relative to its trace size — 539 ms for a
+`tier_threshold` remains the outlier relative to its trace size, 539 ms for a
 16 x 32 trace, against 206 ms for age's larger 34 x 32. The cause is the
 constraint composition degree, not the trace shape. Tracked in
 [FUTURE_WORK.md](FUTURE_WORK.md).
@@ -101,13 +136,13 @@ process; the isolated p50s are the ones to plan capacity against.
 
 Through v2.1, `--skip-proofs` ran the full STARK and then discarded the bytes,
 so it cost the same as a real run while producing nothing. It now runs each
-circuit's `validate()` instead — predicates are still enforced, an under-age
-subject still fails — and skips proving:
+circuit's `validate()` instead, predicates are still enforced, an under-age
+subject still fails, and skips proving:
 
 | | v2.1 | v3.0 |
 |---|---|---|
 | Dry run, 11-row batch, 7 provable subjects | 33.3 s | 0.77 s |
-| Dry run, 1 subject | — | 0.12 s |
+| Dry run, 1 subject |, | 0.12 s |
 
 The stub bundles produced are byte-identical to what v2.1 produced: the leaf
 hash always bound the digest of the empty proof, so the discarded STARK never
@@ -211,14 +246,14 @@ bundle records the SHA-256 of the prover binary that produced it
 a build rather than to "some version of the tool".
 
 Distributing signed prebuilt binaries would cut cold start from minutes to
-seconds — the binaries link only `libSystem` and `libiconv`, so they are as
-portable as native binaries get — but it would put a network fetch in the
+seconds, the binaries link only `libSystem` and `libiconv`, so they are as
+portable as native binaries get, but it would put a network fetch in the
 install path of a tool that otherwise makes no outbound calls. That trade is
 recorded in [FUTURE_WORK.md](FUTURE_WORK.md) rather than taken.
 
 ## Where to look for slowdowns
 
-1. **`set_membership` count.** Each one costs about 1.1–1.5 s. A config with
+1. **`set_membership` count.** Each one costs about 1.1-1.5 s. A config with
    three of them spends 3.7 s of its 4.2 s there. Fields that do not need
    allowlist membership should not use it.
 2. **`commitment_only` vs `preimage_knowledge`.** The former is free; the
